@@ -1,0 +1,21 @@
+# Clipship server configuration.
+# Copy this file to config.py and fill in real values.
+#
+# Generate a strong SECRET_KEY with:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+
+SECRET_KEY = "replace-with-token_hex(32)-output"
+
+# Absolute path to the directory where clipped Markdown files will be written.
+# Must exist and be writable by the user that runs the receiver.
+OUTPUT_DIR = "/path/to/your/inbox"
+
+# Bind address. Keep this on localhost and put Nginx/Caddy in front for TLS.
+HOST = "127.0.0.1"
+PORT = 5050
+
+# Maximum accepted clock skew between extension and server, in seconds.
+MAX_CLOCK_SKEW = 300
+
+# Maximum request body size, in bytes (default 10 MiB).
+MAX_BODY_BYTES = 10 * 1024 * 1024
