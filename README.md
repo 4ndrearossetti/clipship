@@ -4,7 +4,29 @@
 
 ---
 
-WORK IN PROGRESS!
+## Quickstart
+
+```bash
+# Server
+git clone <your-fork> clipship
+cd clipship/server
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+cp config.py.example config.py
+# Generate a secret:
+python3 -c "import secrets; print(secrets.token_hex(32))"
+# Paste it into config.py as SECRET_KEY; set OUTPUT_DIR to your inbox path.
+./venv/bin/python receiver.py
+```
+
+Put Nginx or Caddy in front for TLS (see `docs/setup.md`). Then load the
+extension from `extension/` via `chrome://extensions` (Developer Mode → Load
+Unpacked) or Firefox `about:debugging`, click the icon, paste the endpoint
+URL and the same secret, and clip away.
+
+Full walkthrough: [`docs/setup.md`](docs/setup.md). Security model:
+[`docs/security.md`](docs/security.md).
+
+---
 
 ## What it does
 
