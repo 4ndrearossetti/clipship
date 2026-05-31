@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Self-hosted web clipper. Sends clean Markdown of the current page to your own server.",
   "permissions": ["activeTab", "storage", "scripting"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Clip this page",
     "default_popup": "popup.html",

@@ -112,7 +112,10 @@ Reload your proxy and verify the endpoint responds publicly over HTTPS.
 3. Click **Load unpacked** and pick the `extension/` directory in this repo.
 4. Pin the Clipship icon to the toolbar.
 5. Click the icon → enter your endpoint (`https://clip.example.com/clip`) and the
-   shared secret → **Save**.
+   shared secret → **Save**. The browser will prompt you to grant the extension
+   permission to talk to that host — accept it. (This is what lets the
+   extension bypass CORS for your endpoint, so no `Access-Control-*` headers
+   are needed on the server.)
 
 ### Firefox (temporary install)
 
@@ -148,3 +151,8 @@ Done.
 - **No content extracted** — Readability could not find an article. This is
   common on home pages, search-result pages, and apps that render with no
   semantic structure. Try a specific article URL.
+- **CORS preflight error in the browser console** — you denied the
+  host-permission prompt when saving, or you're running an older build of the
+  extension. Open the popup, hit the gear, **Save** again, and accept the
+  permission prompt this time. The extension does not need any
+  `Access-Control-*` headers on the server when host permission is granted.

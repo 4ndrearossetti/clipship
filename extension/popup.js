@@ -45,12 +45,28 @@ $("save-btn").addEventListener("click", async () => {
     setStatus(configStatusEl, "Both fields are required.", "err");
     return;
   }
+  let originPattern;
   try {
-    new URL(endpoint);
+    originPattern = new URL(endpoint).origin + "/*";
   } catch {
     setStatus(configStatusEl, "Endpoint must be a valid URL.", "err");
     return;
   }
+
+  // Request host permission for the endpoint so fetch() bypasses CORS.
+  // This call requires a user gesture, which the Save click provides.
+  let granted = true;
+  try {
+    granted = await ext.permissions.request({ origins: [originPattern] });
+  } catch (e) {
+    setStatus(configStatusEl, "Permission request failed: " + e.message, "err");
+    return;
+  }
+  if (!granted) {
+    setStatus(configStatusEl, "Host permission denied — clips will be blocked by CORS.", "err");
+    return;
+  }
+
   await ext.storage.local.set({ endpoint, secret });
   setStatus(configStatusEl, "Saved.", "ok");
   setTimeout(showClip, 600);
