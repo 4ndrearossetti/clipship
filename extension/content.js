@@ -146,8 +146,44 @@
     if (meta.byline)   lines.push(`author: "${escapeYaml(meta.byline)}"`);
     if (meta.siteName) lines.push(`site: "${escapeYaml(meta.siteName)}"`);
     lines.push(`clipped: "${meta.clipped}"`);
+    if (meta.tags && meta.tags.length) {
+      const inner = meta.tags.map(t => `"${escapeYaml(t)}"`).join(", ");
+      lines.push(`tags: [${inner}]`);
+    }
     lines.push("---");
     return lines.join("\n");
+  }
+
+  function extractMetaTags() {
+    const out = new Set();
+    const push = (s) => {
+      if (!s) return;
+      String(s)
+        .split(/[,;|]/)
+        .map(t => t.trim())
+        .filter(Boolean)
+        .filter(t => t.length <= 64)
+        .forEach(t => out.add(t));
+    };
+    // Common spots authors put tags / keywords.
+    document.querySelectorAll('meta[name="keywords"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[name="news_keywords"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[property="article:tag"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[property="og:article:tag"]').forEach(m => push(m.content));
+    document.querySelectorAll('a[rel~="tag"]').forEach(a => push(a.textContent));
+    return [...out];
+  }
+
+  function mergeTags(userTags, autoTags) {
+    const seen = new Set();
+    const out = [];
+    for (const tag of [...(userTags || []), ...(autoTags || [])]) {
+      const key = String(tag).toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(String(tag));
+    }
+    return out;
   }
 
   function extract() {
@@ -167,12 +203,14 @@
 
     const now = new Date();
     const title = (article.title || document.title || "Untitled").trim();
+    const userTags = Array.isArray(window.__clipshipUserTags) ? window.__clipshipUserTags : [];
     const meta = {
       title,
       url: location.href,
       byline: (article.byline || "").trim(),
       siteName: (article.siteName || "").trim(),
       clipped: isoTimestamp(now),
+      tags: mergeTags(userTags, extractMetaTags()),
     };
 
     const body = htmlToMarkdown(article.content || "");

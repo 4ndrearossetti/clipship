@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -41,6 +42,12 @@ ASSET_USER_AGENT = str(getattr(
     "ASSET_USER_AGENT",
     "Clipship/1.0 (+https://github.com/4ndrearossetti/clipship)",
 ))
+
+# PDF clipping
+DOWNLOAD_PDFS = bool(getattr(config, "DOWNLOAD_PDFS", True))
+MAX_PDF_BYTES = int(getattr(config, "MAX_PDF_BYTES", 100 * 1024 * 1024))
+PDF_TIMEOUT = float(getattr(config, "PDF_TIMEOUT", 30))
+EXTRACT_PDF_TEXT = bool(getattr(config, "EXTRACT_PDF_TEXT", True))
 
 
 def _err(status: int, message: str):
@@ -172,29 +179,38 @@ def _ext_for(content_type: str, url: str) -> str:
     return "bin"
 
 
-def _fetch_asset(url: str) -> tuple[bytes, str] | None:
-    """Fetch a single asset with SSRF + size + timeout guards. Returns (bytes, ext) or None."""
+def _fetch_url(url: str, max_bytes: int, timeout: float, accept: str) -> tuple[bytes, str] | None:
+    """Generic SSRF-guarded URL fetcher with size + timeout caps."""
     if not _url_is_safe(url):
         return None
     req = urllib.request.Request(url, headers={
         "User-Agent": ASSET_USER_AGENT,
-        "Accept": "image/*,video/*,*/*;q=0.8",
+        "Accept": accept,
     })
     try:
-        with _opener.open(req, timeout=ASSET_TIMEOUT) as resp:
+        with _opener.open(req, timeout=timeout) as resp:
             ct = resp.headers.get("Content-Type", "")
             clen = resp.headers.get("Content-Length")
             if clen:
                 try:
-                    if int(clen) > MAX_ASSET_BYTES:
+                    if int(clen) > max_bytes:
                         return None
                 except ValueError:
                     pass
-            data = resp.read(MAX_ASSET_BYTES + 1)
-            if len(data) > MAX_ASSET_BYTES:
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
                 return None
     except (urllib.error.URLError, OSError, ValueError):
         return None
+    return data, ct
+
+
+def _fetch_asset(url: str) -> tuple[bytes, str] | None:
+    """Fetch a single asset. Returns (bytes, ext) or None."""
+    res = _fetch_url(url, MAX_ASSET_BYTES, ASSET_TIMEOUT, "image/*,video/*,*/*;q=0.8")
+    if not res:
+        return None
+    data, ct = res
     return data, _ext_for(ct, url)
 
 
@@ -260,6 +276,112 @@ def _localize_assets(md_stem: str, content: str) -> tuple[str, int, int]:
 # HTTP handlers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Markdown / encrypted / PDF handlers
+# ---------------------------------------------------------------------------
+
+def _yaml_escape(s: str) -> str:
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_pdf_frontmatter(meta: dict, pdf_relpath: str) -> str:
+    lines = ["---"]
+    lines.append(f'title: "{_yaml_escape(meta.get("title", ""))}"')
+    lines.append(f'source: "{_yaml_escape(meta.get("pdf_url", ""))}"')
+    lines.append(f'clipped: "{_yaml_escape(meta.get("clipped", ""))}"')
+    lines.append('type: "pdf"')
+    lines.append(f'pdf: "{_yaml_escape(pdf_relpath)}"')
+    tags = meta.get("tags") or []
+    if isinstance(tags, list) and tags:
+        inner = ", ".join('"' + _yaml_escape(str(t)) + '"' for t in tags)
+        lines.append(f"tags: [{inner}]")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _build_encrypted_file(payload: dict) -> str:
+    """Render an encrypted clip as a self-describing .md file. The body is the
+    base64 ciphertext, the frontmatter records the parameters needed to decrypt."""
+    lines = ["---", "encrypted: true"]
+    for k in ("algorithm", "kdf", "kdf_iterations", "salt", "iv"):
+        v = payload.get(k)
+        if v is None:
+            continue
+        if isinstance(v, (int, float)):
+            lines.append(f"{k}: {v}")
+        else:
+            lines.append(f'{k}: "{_yaml_escape(str(v))}"')
+    lines.append(f'clipped: "{_yaml_escape(_iso_now())}"')
+    tags = payload.get("tags") or []
+    if isinstance(tags, list) and tags:
+        inner = ", ".join('"' + _yaml_escape(str(t)) + '"' for t in tags)
+        lines.append(f"tags: [{inner}]")
+    lines.append("---")
+    lines.append("")
+    lines.append(payload.get("ciphertext", ""))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _iso_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _handle_pdf(target: Path, payload: dict) -> tuple[str, dict]:
+    """Download a PDF, save under assets/, render a stub .md, return (content, extras)."""
+    pdf_url = payload.get("pdf_url", "")
+    if not isinstance(pdf_url, str) or not pdf_url:
+        raise ValueError("missing pdf_url")
+    if not DOWNLOAD_PDFS:
+        raise ValueError("PDF downloads are disabled on this server")
+
+    res = _fetch_url(pdf_url, MAX_PDF_BYTES, PDF_TIMEOUT, "application/pdf,*/*;q=0.1")
+    if not res:
+        raise ValueError("could not fetch PDF (size cap, timeout, or SSRF block)")
+    data, _ct = res
+
+    assets_root = OUTPUT_DIR / ASSETS_SUBDIR
+    assets_root.mkdir(parents=True, exist_ok=True)
+    pdf_name = f"{target.stem}.pdf"
+    (assets_root / pdf_name).write_bytes(data)
+    pdf_relpath = f"{ASSETS_SUBDIR}/{pdf_name}"
+
+    meta = {
+        "title": payload.get("title") or target.stem,
+        "pdf_url": pdf_url,
+        "clipped": _iso_now(),
+        "tags": payload.get("tags") or [],
+    }
+    body_parts = [_build_pdf_frontmatter(meta, pdf_relpath), ""]
+    body_parts.append(f"[Open PDF]({pdf_relpath})")
+    body_parts.append("")
+
+    text = ""
+    if EXTRACT_PDF_TEXT:
+        try:
+            import pypdf  # optional dependency
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            chunks = []
+            for page in reader.pages:
+                try:
+                    chunks.append(page.extract_text() or "")
+                except Exception:
+                    continue
+            text = "\n\n".join(c.strip() for c in chunks if c and c.strip())
+        except ImportError:
+            text = ""
+        except Exception:
+            text = ""
+
+    if text:
+        body_parts.append("---")
+        body_parts.append("")
+        body_parts.append(text)
+        body_parts.append("")
+
+    return "\n".join(body_parts), {"pdf": pdf_name, "pdf_bytes": len(data)}
+
+
 @app.post("/clip")
 def clip():
     timestamp = request.headers.get("X-Clipship-Timestamp", "")
@@ -286,29 +408,53 @@ def clip():
         return _err(400, "invalid JSON body")
 
     filename = _sanitize_filename(payload.get("filename"))
-    content = payload.get("content")
     if not filename:
         return _err(400, "invalid filename")
-    if not isinstance(content, str) or not content:
-        return _err(400, "invalid content")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     target = _unique_path(OUTPUT_DIR, filename)
     if OUTPUT_DIR not in target.resolve().parents and target.resolve() != OUTPUT_DIR:
         return _err(400, "path traversal detected")
 
+    # Branch on payload shape: pdf, encrypted, or plain markdown.
+    is_pdf = bool(payload.get("pdf_url"))
+    is_encrypted = bool(payload.get("encrypted"))
+
     assets_downloaded = 0
     assets_failed = 0
-    if DOWNLOAD_ASSETS:
-        content, assets_downloaded, assets_failed = _localize_assets(target.stem, content)
+    extra: dict = {}
+
+    if is_pdf:
+        try:
+            content, extra = _handle_pdf(target, payload)
+        except ValueError as e:
+            return _err(400, str(e))
+    elif is_encrypted:
+        # Validate the encrypted-payload fields.
+        for f in ("algorithm", "kdf", "salt", "iv", "ciphertext"):
+            if not isinstance(payload.get(f), (str, int)) or not payload.get(f):
+                return _err(400, f"encrypted payload missing field: {f}")
+        content = _build_encrypted_file(payload)
+    else:
+        content = payload.get("content")
+        if not isinstance(content, str) or not content:
+            return _err(400, "invalid content")
+        if DOWNLOAD_ASSETS:
+            content, assets_downloaded, assets_failed = _localize_assets(target.stem, content)
 
     target.write_text(content, encoding="utf-8")
-    return jsonify({
+    response = {
         "status": "ok",
         "file": target.name,
         "assets_downloaded": assets_downloaded,
         "assets_failed": assets_failed,
-    })
+    }
+    response.update(extra)
+    if is_encrypted:
+        response["encrypted"] = True
+    if is_pdf:
+        response["pdf"] = True
+    return jsonify(response)
 
 
 @app.errorhandler(413)
