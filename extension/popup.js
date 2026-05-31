@@ -85,7 +85,14 @@ $("clip-btn").addEventListener("click", async () => {
     setStatus(statusEl, "Extracting…", "");
     const response = await ext.runtime.sendMessage({ type: "clip" });
     if (response && response.ok) {
-      setStatus(statusEl, `Saved: ${response.file}`, "ok");
+      let msg = `Saved: ${response.file}`;
+      if (response.assets_downloaded) {
+        msg += ` (+${response.assets_downloaded} image${response.assets_downloaded === 1 ? "" : "s"})`;
+      }
+      if (response.assets_failed) {
+        msg += ` — ${response.assets_failed} image${response.assets_failed === 1 ? "" : "s"} failed`;
+      }
+      setStatus(statusEl, msg, "ok");
     } else {
       setStatus(statusEl, `Error: ${response?.error || "unknown"}`, "err");
     }

@@ -93,7 +93,12 @@ async function clipCurrentTab() {
     const msg = (data && (data.error || data.message)) || `HTTP ${resp.status}`;
     return { ok: false, error: msg };
   }
-  return { ok: true, file: (data && data.file) || extracted.filename };
+  return {
+    ok: true,
+    file: (data && data.file) || extracted.filename,
+    assets_downloaded: (data && data.assets_downloaded) || 0,
+    assets_failed: (data && data.assets_failed) || 0,
+  };
 }
 
 ext.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
