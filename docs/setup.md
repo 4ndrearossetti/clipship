@@ -139,6 +139,36 @@ ls -lt /var/lib/clipship/inbox | head
 
 Done.
 
+## How clips are stored
+
+Every successful clip writes one Markdown file to `OUTPUT_DIR`. When
+`DOWNLOAD_ASSETS` is enabled (the default), every image referenced in the
+clip is also downloaded into `OUTPUT_DIR/assets/`, and the Markdown is
+rewritten to point at the local copy. The layout looks like this:
+
+```
+/var/lib/clipship/inbox/
+├── 2026-05-31T14-22-09Z-my-article.md
+├── 2026-05-31T14-22-09Z-my-article-img1.jpg   ← from assets/ subdir
+└── assets/
+    ├── 2026-05-31T14-22-09Z-my-article-img1.jpg
+    └── 2026-05-31T14-22-09Z-my-article-img2.png
+```
+
+The Markdown references each image as `assets/<file>` (relative path), so
+moving the inbox directory keeps the links intact. Asset names are
+`<md-stem>-img<n>.<ext>`, with `n` counting unique URLs in the order they
+appear — duplicates point at the same file. Extensions come from the
+server's `Content-Type` response, falling back to the URL path.
+
+If a download fails (host unreachable, SSRF block, size cap, timeout), the
+original remote URL is preserved in the Markdown so you can still view the
+image in a renderer that fetches remote content. The response payload
+reports `assets_downloaded` and `assets_failed` counts.
+
+Turn the whole feature off by setting `DOWNLOAD_ASSETS = False` in
+`config.py` — the server then stops making any outbound HTTP requests.
+
 ## Troubleshooting
 
 - **403 `invalid signature`** — the secret in the extension does not match

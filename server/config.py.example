@@ -19,3 +19,26 @@ MAX_CLOCK_SKEW = 300
 
 # Maximum request body size, in bytes (default 10 MiB).
 MAX_BODY_BYTES = 10 * 1024 * 1024
+
+# --- Asset localization -----------------------------------------------------
+# When True, the server downloads every image referenced in the clipped
+# markdown, stores it under OUTPUT_DIR/<ASSETS_SUBDIR>, and rewrites the
+# markdown to point at the local copy. Set to False if you want clips to
+# keep referencing the original remote URLs.
+DOWNLOAD_ASSETS = True
+
+# Subdirectory inside OUTPUT_DIR where downloaded assets are written. One
+# folder for all clips; the per-file slug prefix keeps names unique.
+ASSETS_SUBDIR = "assets"
+
+# Per-asset size cap, in bytes. Anything larger is skipped.
+MAX_ASSET_BYTES = 25 * 1024 * 1024
+
+# Hard cap on the number of assets fetched per clip.
+MAX_ASSETS_PER_CLIP = 100
+
+# Per-asset network timeout, in seconds.
+ASSET_TIMEOUT = 10
+
+# User-Agent the server uses when fetching assets.
+ASSET_USER_AGENT = "Clipship/1.0 (+https://github.com/4ndrearossetti/clipship)"

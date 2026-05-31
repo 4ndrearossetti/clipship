@@ -21,6 +21,15 @@ internet but is only ever written to by the user's own browser.
   (10 MiB by default) with `413`. Configure your reverse proxy with a matching
   `client_max_body_size` limit so the cap is also enforced at the edge.
 - **Timing attacks** — signature comparison uses `hmac.compare_digest`, not `==`.
+- **SSRF via asset downloads** — when `DOWNLOAD_ASSETS = True` the server
+  fetches every image URL referenced in a clip. Each URL is validated before
+  the request: scheme must be `http(s)`, the resolved IP cannot be in any
+  private / loopback / link-local / CGNAT / multicast / reserved range, and
+  redirects are re-validated against the same rules. Per-asset size and
+  timeout caps are enforced (`MAX_ASSET_BYTES`, `ASSET_TIMEOUT`), and the
+  total number of fetches per clip is capped (`MAX_ASSETS_PER_CLIP`). Disable
+  the feature entirely (`DOWNLOAD_ASSETS = False`) if you do not want the
+  receiver making outbound HTTP at all.
 
 ## What is not protected (and why that is acceptable here)
 
