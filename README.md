@@ -8,7 +8,7 @@
 
 ```bash
 # Server
-git clone <your-fork> clipship
+git clone https://github.com/4ndrearossetti/clipship.git
 cd clipship/server
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 cp config.py.example config.py
@@ -277,25 +277,6 @@ sudo systemctl enable --now clipship
 3. Same configuration step as above
 
 For permanent Firefox install: sign via `web-ext sign` with a Mozilla account (free).
-
----
-
-## What Claude Code needs to implement
-
-Everything above is fully specified. The implementation tasks in order:
-
-1. `extension/Readability.js` — download from `github.com/mozilla/readability`, vendor as-is
-2. `extension/content.js` — Readability extraction + HTML-to-Markdown conversion
-3. `extension/background.js` — Web Crypto HMAC signing + fetch POST
-4. `extension/popup.html` + `popup.js` — config storage + clip button + status display
-5. `extension/manifest.json` — MV3, minimal permissions
-6. `server/receiver.py` — Flask endpoint with HMAC verification + file write
-7. `server/config.py.example`
-8. `server/clipship.service`
-9. `docs/setup.md` and `docs/security.md`
-10. `README.md` with one-paragraph description, setup quickstart, and security note
-
-No ambiguity in the spec. Each component has defined inputs, outputs, and interfaces.
 
 ---
 
