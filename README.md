@@ -2,6 +2,31 @@
 
 > A minimal, self-hosted web clipper. Captures clean article content from any page and delivers it as Markdown to a folder on your own server — no cloud, no account, no vendor.
 
+## Features
+
+- **Clean Markdown clips** — Mozilla's Readability + a small HTML-to-Markdown
+  converter, with YAML frontmatter (title, source, author, site, date, tags).
+- **Tags** — type comma-separated tags in the popup, or let Clipship auto-extract
+  them from the page's `meta[name=keywords]`, `meta[property=article:tag]` and
+  `<a rel="tag">` elements. Both are merged and deduped.
+- **Self-contained clips** — the server downloads every image referenced in the
+  Markdown into `assets/`, with SSRF guards, size and timeout caps. No more
+  broken images when viewing offline or in privacy-preserving renderers.
+- **PDF clipping** — click the icon on a `.pdf` tab and the server downloads
+  the file, stores it next to the Markdown, and extracts the text body (with
+  `pypdf`).
+- **Bulk URL import** — `server/bulk_import.py` ingests a file of URLs in
+  parallel, runs the same extractor server-side, writes straight to the inbox.
+- **Web UI** — optional Flask read-only browser: list, search, filter by tag,
+  view rendered Markdown with images. HTTP-Basic-auth-gated, off by default.
+- **Optional end-to-end encryption** — AES-GCM-256, passphrase-derived via
+  PBKDF2-SHA256 (600 000 iterations). The server stores ciphertext and cannot
+  read encrypted clips.
+- **Signed payloads** — HMAC-SHA256 over `timestamp + "." + body`, ±5 minute
+  replay window, constant-time signature comparison server-side.
+- **No third parties** — the extension talks only to your endpoint; the server
+  only fetches images and PDFs you've referenced. No analytics, no telemetry.
+
 ---
 
 ## Quickstart
@@ -11,6 +36,8 @@
 git clone https://github.com/4ndrearossetti/clipship.git
 cd clipship/server
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+# Optional: PDF text extraction + bulk import support
+./venv/bin/pip install -r requirements-extras.txt
 cp config.py.example config.py
 # Generate a secret:
 python3 -c "import secrets; print(secrets.token_hex(32))"
@@ -24,7 +51,9 @@ Unpacked) or Firefox `about:debugging`, click the icon, paste the endpoint
 URL and the same secret, and clip away.
 
 Full walkthrough: [`docs/setup.md`](docs/setup.md). Security model:
-[`docs/security.md`](docs/security.md).
+[`docs/security.md`](docs/security.md). AMO publishing:
+[`docs/amo-submission.md`](docs/amo-submission.md). Privacy:
+[`docs/privacy.md`](docs/privacy.md).
 
 ---
 
@@ -51,245 +80,111 @@ No database. No user accounts. No third-party services. One folder, one secret, 
 ```
 clipship/
 ├── extension/
-│   ├── manifest.json          # WebExtension manifest v3
-│   ├── popup.html             # Extension popup UI
-│   ├── popup.js               # Clip action, config UI, status feedback
-│   ├── background.js          # Service worker: signs and POSTs payload
-│   ├── content.js             # Injected into page: runs Readability, returns article
-│   ├── Readability.js         # Mozilla Readability (vendored, unmodified)
+│   ├── manifest.json              # MV3, minimal permissions
+│   ├── popup.html / popup.js      # UI: config + tags + clip + status
+│   ├── background.js              # Signs + POSTs + handles PDF / E2E
+│   ├── content.js                 # Readability + HTML→Markdown + tag extraction
+│   ├── Readability.js             # Mozilla Readability (vendored)
+│   ├── build.sh                   # Lint + package via web-ext
 │   └── icons/
-│       ├── icon-16.png
-│       ├── icon-48.png
-│       └── icon-128.png
 │
 ├── server/
-│   ├── receiver.py            # Flask HTTP endpoint
-│   ├── config.py              # Server configuration (endpoint, output path, secret)
-│   ├── requirements.txt
-│   └── clipship.service       # systemd unit file
+│   ├── receiver.py                # Flask /clip endpoint (HMAC, assets, PDFs, E2E)
+│   ├── web.py                     # Optional web UI (read-only, basic auth)
+│   ├── bulk_import.py             # CLI: import a file of URLs in parallel
+│   ├── test_clipship.py           # Unittest suite (19 tests)
+│   ├── config.py                  # Your config (gitignored)
+│   ├── config.py.example          # Template
+│   ├── requirements.txt           # Flask + markdown
+│   ├── requirements-extras.txt    # pypdf, readability-lxml, html2text
+│   ├── clipship.service           # systemd unit for the receiver
+│   └── clipship-web.service       # systemd unit for the web UI
 │
 ├── docs/
-│   ├── setup.md               # End-to-end setup guide
-│   └── security.md            # Threat model and security decisions
+│   ├── setup.md                   # End-to-end install + every feature
+│   ├── security.md                # Threat model
+│   ├── privacy.md                 # What is stored / sent / never sent
+│   └── amo-submission.md          # Step-by-step Firefox AMO publishing
 │
 ├── README.md
-└── LICENSE                    # MIT
+└── LICENSE                        # MIT
 ```
 
 ---
 
-## Extension
-
-### manifest.json
-
-Manifest V3. Permissions required:
-
-- `activeTab` — read current page content on user action only
-- `storage` — persist endpoint URL and HMAC secret locally
-- `scripting` — inject content.js to extract article body
-
-No `<all_urls>` blanket permission. Content script is injected on demand, not persistently.
-
-### Content extraction (content.js + Readability.js)
-
-Vendor Mozilla's `Readability.js` directly into the extension. No CDN, no runtime fetch.
-
-On clip action:
-1. Clone `document` to avoid mutating the live page
-2. Run `new Readability(documentClone).parse()`
-3. Return `{ title, byline, content (HTML), textContent, url, siteName }`
-4. Convert `content` to Markdown using a minimal HTML-to-Markdown function (no external dependency needed for the subset Readability produces: headings, paragraphs, links, lists, blockquotes, code)
-
-Output format per clipped file:
-
-```markdown
----
-title: {title}
-source: {url}
-author: {byline}
-site: {siteName}
-clipped: {ISO8601 timestamp}
----
-
-{body in Markdown}
-```
-
-### Signing (background.js)
-
-HMAC-SHA256 using the Web Crypto API (built into all modern browsers, no library needed):
+## How it works
 
 ```
-signature = HMAC-SHA256(secret, timestamp + "." + body)
+┌───────────── Browser ─────────────┐         ┌────── Your server ──────┐
+│  popup.js (config + tags + clip)  │         │   Nginx / Caddy (TLS)   │
+│            │                       │  POST   │           │             │
+│            ▼                       │ ──────▶ │           ▼             │
+│  background.js                     │  HTTPS  │   receiver.py (Flask)   │
+│   • inject Readability + content   │         │   1. verify HMAC + time │
+│   • read window.__clipshipResult   │         │   2. sanitize filename  │
+│   • optional AES-GCM encrypt       │         │   3. download images    │
+│   • HMAC-sign + fetch              │         │      → assets/          │
+│            │                       │         │   4. write .md          │
+│            ▼  (page DOM stays here)│         │           │             │
+│  content.js (one-shot, in page)    │         │           ▼             │
+│   • Readability.parse              │         │   OUTPUT_DIR/*.md       │
+│   • HTML → Markdown                │         │   OUTPUT_DIR/assets/    │
+│   • auto-extract meta tags         │         │                         │
+│   • build frontmatter w/ user tags │         │   web.py (optional)     │
+│            │                       │         │   • Basic-auth          │
+│            ▼  (returns via msg)    │         │   • lists clips         │
+└────────────────────────────────────┘         │   • renders markdown    │
+                                                │   • tag filter + search │
+                                                └─────────────────────────┘
 ```
 
-Request headers sent:
+The wire format is one JSON POST per clip:
 
-```
-X-Clipship-Timestamp: {unix timestamp}
-X-Clipship-Signature: {hex digest}
+```http
+POST /clip
+X-Clipship-Timestamp: 1717180000
+X-Clipship-Signature: <hex HMAC-SHA256(secret, ts + "." + raw_body)>
 Content-Type: application/json
+
+{ "filename": "...md", "content": "---\ntitle: ...\n..." }
 ```
 
-Timestamp is included in the signed payload to prevent replay attacks (server rejects requests where `|now - timestamp| > 300 seconds`).
+Three other payload shapes:
 
-### Popup UI (popup.html / popup.js)
+| Shape | Trigger | Extra fields |
+|---|---|---|
+| Plain markdown | normal clip | `content` |
+| Encrypted | `encryption_enabled = true` | `encrypted`, `algorithm`, `kdf`, `kdf_iterations`, `salt`, `iv`, `ciphertext` (no `content`) |
+| PDF | tab URL matches `.pdf(?\|#\|$)` | `pdf_url`, `title`, `tags` (no `content`) |
 
-First run: shows configuration fields (endpoint URL, HMAC secret). Saved to `chrome.storage.local`.
+Detailed reference: [`docs/setup.md`](docs/setup.md).
+[`docs/security.md`](docs/security.md) describes the threat model.
 
-Subsequent runs: single "Clip this page" button. Shows inline status: extracting → signing → sending → saved / error.
-
-No options page needed — config lives in the popup itself, accessible via a small gear icon.
-
----
-
-## Server
-
-### receiver.py
-
-Flask application. Single route: `POST /clip`
-
-**Request body (JSON):**
-
-```json
-{
-  "filename": "2026-05-30T12-34-56-title-slug.md",
-  "content": "---\ntitle: ...\n..."
-}
-```
-
-**Verification logic:**
-
-1. Read `X-Clipship-Timestamp` and `X-Clipship-Signature` from headers
-2. Reject if `|now - timestamp| > 300` seconds
-3. Recompute `HMAC-SHA256(secret, timestamp + "." + raw_body)`
-4. Reject if signature does not match (constant-time comparison via `hmac.compare_digest`)
-5. Sanitize filename: strip path separators, enforce `.md` extension, reject `..`
-6. Write to configured output directory
-7. Return `200 {"status": "ok", "file": filename}` or appropriate error
-
-**config.py:**
-
-```python
-SECRET_KEY   = "your-secret-here"   # must match extension config
-OUTPUT_DIR   = "/path/to/your/inbox"
-HOST         = "127.0.0.1"          # bind to localhost; put Nginx in front
-PORT         = 5050
-```
-
-### Running in production
-
-The receiver should not be exposed directly. Put it behind Nginx or Caddy as a reverse proxy with TLS. The extension POSTs to `https://yourdomain.com/clip`.
-
-**Nginx location block:**
-
-```nginx
-location /clip {
-    proxy_pass http://127.0.0.1:5050;
-    proxy_set_header X-Real-IP $remote_addr;
-    client_max_body_size 10m;
-}
-```
-
-**systemd unit (clipship.service):**
-
-```ini
-[Unit]
-Description=Clipship receiver
-After=network.target
-
-[Service]
-User=www-data
-WorkingDirectory=/opt/clipship/server
-ExecStart=/opt/clipship/server/venv/bin/python receiver.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### requirements.txt
-
-```
-flask>=3.0
-```
-
-No other dependencies. HMAC and file I/O are stdlib.
-
----
-
-## Security model
-
-### What is protected
-
-- **Unauthorized writes:** Any POST without a valid HMAC signature is rejected with 403 before touching the filesystem.
-- **Replay attacks:** Timestamp window of ±5 minutes. A captured request cannot be replayed after that window.
-- **Path traversal:** Filename is sanitized server-side regardless of what the extension sends. Output is always confined to `OUTPUT_DIR`.
-- **Oversized payloads:** Nginx enforces `client_max_body_size 10m`. Flask also enforces a request size limit.
-- **Timing attacks on signature comparison:** `hmac.compare_digest` used, not `==`.
-
-### What is not protected (and why that's acceptable)
-
-- **Secret confidentiality:** The HMAC secret is stored in `chrome.storage.local`, which is accessible to the extension only — not to page scripts. It is not in source code and is never transmitted. The user is responsible for choosing a strong secret (document this clearly).
-- **Content confidentiality:** The POST body is not encrypted beyond TLS. Anyone with a valid TLS MITM could read clipped content. For a personal self-hosted tool behind your own domain, this is acceptable. Document that the server must be HTTPS.
-- **Extension code review:** Manifest V3, minimal permissions, no remote code execution, all dependencies vendored. Users should review the code before installing from source.
-
-### Secret generation (documented for users)
+## Tests
 
 ```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
+cd server
+./venv/bin/pip install -r requirements.txt -r requirements-extras.txt
+./venv/bin/python -m unittest test_clipship.py
 ```
 
----
+19 tests: HMAC, replay window, path traversal, asset localization with
+mocked fetch, SSRF blocklist, encrypted payload accept/reject, web UI auth,
+tag filtering, search, asset serving, traversal blocking under `/assets`.
 
-## Setup guide (docs/setup.md)
-
-### Server
+## Publishing to Firefox AMO
 
 ```bash
-git clone https://github.com/yourhandle/clipship
-cd clipship/server
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Edit config.py: set SECRET_KEY and OUTPUT_DIR
-cp config.py.example config.py
-nano config.py
-
-# Install and start systemd service
-sudo cp clipship.service /etc/systemd/system/
-sudo systemctl enable --now clipship
-
-# Add Nginx reverse proxy block (see README) and ensure TLS is active
+cd extension
+./build.sh
+# → web-ext-artifacts/clipship-x.y.z.zip
 ```
 
-### Extension (Chrome)
-
-1. `chrome://extensions` → Enable Developer Mode
-2. Load Unpacked → select `clipship/extension/`
-3. Click the extension icon → enter your endpoint URL and secret → Save
-
-### Extension (Firefox)
-
-1. `about:debugging` → This Firefox → Load Temporary Add-on
-2. Select `clipship/extension/manifest.json`
-3. Same configuration step as above
-
-For permanent Firefox install: sign via `web-ext sign` with a Mozilla account (free).
+The build script runs `web-ext lint` then `web-ext build`. Step-by-step
+upload walkthrough, listing copy template and answers to likely reviewer
+questions: [`docs/amo-submission.md`](docs/amo-submission.md).
 
 ---
 
-## Future Additions
-
-- Browser-native PDF clipping (PDF content extraction is a separate problem)
-- Bulk URL import
-- Tagging or metadata beyond frontmatter
-- A web UI for browsing clipped content
-- End-to-end encryption of clip content
-- Firefox signed release on AMO
-
----
-
-MIT License.
+*MIT License.*
 
