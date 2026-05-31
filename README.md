@@ -280,7 +280,7 @@ For permanent Firefox install: sign via `web-ext sign` with a Mozilla account (f
 
 ---
 
-## Out of scope (v1)
+## Future Additions
 
 - Browser-native PDF clipping (PDF content extraction is a separate problem)
 - Bulk URL import
@@ -289,9 +289,7 @@ For permanent Firefox install: sign via `web-ext sign` with a Mozilla account (f
 - End-to-end encryption of clip content
 - Firefox signed release on AMO
 
-These are all reasonable v2 additions. Keep v1 focused.
-
 ---
 
-*MIT License. Built to be auditable: ~400 lines of code total across all components.*
+MIT License.
 
