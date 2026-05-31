@@ -1,0 +1,21 @@
+[Unit]
+Description=Clipship web UI
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/clipship/server
+ExecStart=/opt/clipship/server/venv/bin/python web.py
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Read-only access to the inbox is sufficient — the web UI never writes.
+ReadOnlyPaths=/var/lib/clipship/inbox
+
+[Install]
+WantedBy=multi-user.target

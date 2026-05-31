@@ -59,3 +59,14 @@ PDF_TIMEOUT = 30
 # the Markdown file (requires the `pypdf` package; gracefully no-ops if not
 # installed). Set to False if you only want the PDF stored and linked.
 EXTRACT_PDF_TEXT = True
+
+# --- Web UI -----------------------------------------------------------------
+# Browse clipped Markdown files from a web browser. Run via:
+#   python web.py        (or the `clipship-web` systemd unit)
+# Disabled by default so receiver-only deployments are unaffected.
+WEB_UI_ENABLED = False
+WEB_UI_USERNAME = "admin"
+WEB_UI_PASSWORD = ""         # set this before enabling
+WEB_UI_HOST = "127.0.0.1"    # put Nginx in front for TLS
+WEB_UI_PORT = 5051
+WEB_UI_PAGE_SIZE = 30
