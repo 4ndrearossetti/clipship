@@ -25,8 +25,10 @@ from flask import Flask, request, jsonify
 
 import config
 
+MAX_BODY_BYTES = int(getattr(config, "MAX_BODY_BYTES", 10 * 1024 * 1024))
+
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = getattr(config, "MAX_BODY_BYTES", 10 * 1024 * 1024)
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 
 OUTPUT_DIR = Path(config.OUTPUT_DIR).resolve()
 MAX_SKEW = int(getattr(config, "MAX_CLOCK_SKEW", 300))
