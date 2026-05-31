@@ -25,8 +25,9 @@ cd extension
 # → web-ext-artifacts/clipship-1.0.0.zip
 ```
 
-This runs `web-ext lint`, then `web-ext build`. The expected lint output
-on a clean working tree is:
+This runs `web-ext lint` (which is configured via `web-ext-config.cjs`
+to exclude `build.sh` and the artifacts directory from packaging), then
+`web-ext build`. The expected lint output on a clean working tree is:
 
 ```
 0 errors, 3 warnings
