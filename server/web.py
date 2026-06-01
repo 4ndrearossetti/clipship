@@ -23,6 +23,7 @@ from urllib.parse import quote, urlparse
 from flask import (
     Flask, Response, abort, redirect, request, send_from_directory, url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
 
@@ -31,12 +32,22 @@ WEB_UI_USERNAME = str(getattr(config, "WEB_UI_USERNAME", "admin"))
 WEB_UI_PASSWORD = str(getattr(config, "WEB_UI_PASSWORD", ""))
 WEB_UI_HOST = str(getattr(config, "WEB_UI_HOST", "127.0.0.1"))
 WEB_UI_PORT = int(getattr(config, "WEB_UI_PORT", 5051))
+WEB_UI_TRUST_PROXY = bool(getattr(config, "WEB_UI_TRUST_PROXY", True))
 PAGE_SIZE = int(getattr(config, "WEB_UI_PAGE_SIZE", 30))
 
 OUTPUT_DIR = Path(config.OUTPUT_DIR).resolve()
 ASSETS_SUBDIR = str(getattr(config, "ASSETS_SUBDIR", "assets"))
 
 app = Flask(__name__)
+
+if WEB_UI_TRUST_PROXY:
+    # Honour X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Prefix so the
+    # app generates correct URLs when running behind nginx/caddy at a subpath
+    # (e.g. https://example.com/ui/). Only safe when the receiver is bound to
+    # 127.0.0.1 and exposed only via the proxy.
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +150,6 @@ def _list_clips() -> list[dict]:
             "author": fm.get("author", ""),
             "clipped": fm.get("clipped", ""),
             "tags": tags,
-            "encrypted": bool(fm.get("encrypted")),
             "is_pdf": fm.get("type") == "pdf",
             "mtime": path.stat().st_mtime,
         })
@@ -231,10 +241,6 @@ article blockquote {{
   margin: 0; padding: 4px 16px; border-left: 4px solid var(--border);
   color: var(--muted);
 }}
-.encrypted-notice {{
-  padding: 14px 18px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--code-bg);
-}}
 .frontmatter {{
   margin-bottom: 24px; padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
@@ -281,8 +287,6 @@ def _render_clip_row(c: dict) -> str:
             meta_bits.append(html.escape(host))
     meta = '<span class="sep">·</span>'.join(meta_bits)
     badges = ""
-    if c["encrypted"]:
-        badges += '<span class="badge">encrypted</span>'
     if c["is_pdf"]:
         badges += '<span class="badge">pdf</span>'
     return (
@@ -382,23 +386,6 @@ def view_clip(filename: str):
     if tag_html:
         head += f'<div style="margin-top:8px">{tag_html}</div>'
     head += '</div>'
-
-    if fm.get("encrypted"):
-        notice = (
-            '<div class="encrypted-notice">'
-            '<p><strong>This clip is end-to-end encrypted.</strong></p>'
-            '<p class="muted">The server cannot decrypt it. Open the file in the '
-            'extension or another tool that holds your passphrase to read its '
-            'contents.</p>'
-            f'<details><summary>Encryption parameters</summary>'
-            f'<pre>algorithm: {html.escape(str(fm.get("algorithm","")))}\n'
-            f'kdf: {html.escape(str(fm.get("kdf","")))}\n'
-            f'kdf_iterations: {fm.get("kdf_iterations","")}\n'
-            f'salt: {html.escape(str(fm.get("salt","")))}\n'
-            f'iv: {html.escape(str(fm.get("iv","")))}</pre></details>'
-            '</div>'
-        )
-        return _render_page(title, head + notice)
 
     rendered = _render_markdown(body_md, filename)
     return _render_page(title, head + f'<article>{rendered}</article>')

@@ -1,19 +1,36 @@
-// Service worker: orchestrates extraction, optional encryption, HMAC signing,
-// and POST. Also handles the PDF flow, which sends the URL to the server
-// instead of an extracted article body.
+// Service worker: orchestrates extraction, HMAC signing, and POST.
+// Also handles the PDF flow, which sends the URL to the server instead of
+// an extracted article body.
 
 const ext = (typeof browser !== "undefined") ? browser : chrome;
 
-const PDF_URL_RE = /\.pdf(\?|#|$)/i;
+// PDF detection — match common URL patterns. Browsers serve PDFs in their
+// built-in viewer for these, and content-script injection won't return useful
+// data, so we route them through the server-side PDF flow instead.
+const PDF_EXT_RE = /\.pdf(\?|#|$)/i;
+// Path patterns that scholarly hosts use to serve PDFs without a .pdf
+// extension (arxiv.org/pdf/<id>, openreview.net/pdf, biorxiv.org/.../pdf, ...).
+const PDF_PATH_RE = /\/pdf(\/|$)/i;
 
 async function getActiveTab() {
   const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
 
+function isLocalFile(tab) {
+  return tab && tab.url && tab.url.toLowerCase().startsWith("file:");
+}
+
 function isPdfTab(tab) {
   if (!tab || !tab.url) return false;
-  return PDF_URL_RE.test(tab.url);
+  if (isLocalFile(tab)) return false; // can't fetch local files server-side
+  if (PDF_EXT_RE.test(tab.url)) return true;
+  // Common scholarly-PDF paths: arxiv.org/pdf/…, biorxiv.org/…/pdf, etc.
+  try {
+    const u = new URL(tab.url);
+    if (PDF_PATH_RE.test(u.pathname)) return true;
+  } catch { /* ignore */ }
+  return false;
 }
 
 async function runExtraction(tabId, userTags) {
@@ -44,13 +61,6 @@ function hexEncode(buffer) {
   return out;
 }
 
-function bytesToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
 async function hmacSha256Hex(secret, message) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -63,48 +73,6 @@ async function hmacSha256Hex(secret, message) {
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return hexEncode(sig);
 }
-
-// --- E2E encryption ---------------------------------------------------------
-// Derive a 256-bit AES-GCM key from a passphrase via PBKDF2-SHA256.
-// PBKDF2_ITERATIONS matches the receiver's expected default.
-const PBKDF2_ITERATIONS = 600000;
-
-async function deriveKey(passphrase, salt) {
-  const enc = new TextEncoder();
-  const material = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(passphrase),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
-    material,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"]
-  );
-}
-
-async function encryptPayload(plaintext, passphrase) {
-  const enc = new TextEncoder();
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(passphrase, salt);
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(plaintext));
-  return {
-    encrypted: true,
-    algorithm: "AES-GCM-256",
-    kdf: "PBKDF2-SHA256",
-    kdf_iterations: PBKDF2_ITERATIONS,
-    salt: bytesToBase64(salt),
-    iv: bytesToBase64(iv),
-    ciphertext: bytesToBase64(ct),
-  };
-}
-
-// ---------------------------------------------------------------------------
 
 async function postSigned(endpoint, secret, bodyObj) {
   const body = JSON.stringify(bodyObj);
@@ -145,15 +113,9 @@ function isoFilename(d) {
 }
 
 async function clipCurrentTab(userTags) {
-  const cfg = await ext.storage.local.get([
-    "endpoint", "secret", "encryption_enabled", "encryption_passphrase",
-  ]);
-  const { endpoint, secret } = cfg;
+  const { endpoint, secret } = await ext.storage.local.get(["endpoint", "secret"]);
   if (!endpoint || !secret) {
     return { ok: false, error: "endpoint and secret not configured" };
-  }
-  if (cfg.encryption_enabled && !cfg.encryption_passphrase) {
-    return { ok: false, error: "encryption enabled but no passphrase set" };
   }
 
   const tab = await getActiveTab();
@@ -161,28 +123,13 @@ async function clipCurrentTab(userTags) {
   if (tab.url && /^(chrome|about|edge|moz-extension|chrome-extension):/i.test(tab.url)) {
     return { ok: false, error: "cannot clip browser internal pages" };
   }
+  if (isLocalFile(tab)) {
+    return { ok: false, error: "cannot clip local files (file:// URLs); the server has no way to reach them" };
+  }
 
   // PDF path: don't try to inject; send the URL for server-side download.
   if (isPdfTab(tab)) {
-    const title = (tab.title || tab.url || "document").trim();
-    const filename = `${isoFilename(new Date())}-${slugify(title)}.md`;
-    const body = {
-      filename,
-      pdf_url: tab.url,
-      title,
-      tags: userTags || [],
-    };
-    let resp, data;
-    try {
-      ({ resp, data } = await postSigned(endpoint, secret, body));
-    } catch (e) {
-      return { ok: false, error: "network: " + e.message };
-    }
-    if (!resp.ok) {
-      const msg = (data && (data.error || data.message)) || `HTTP ${resp.status}`;
-      return { ok: false, error: msg };
-    }
-    return { ok: true, file: (data && data.file) || filename, pdf: true };
+    return await clipAsPdf(endpoint, secret, tab, userTags);
   }
 
   let extracted;
@@ -192,20 +139,26 @@ async function clipCurrentTab(userTags) {
     return { ok: false, error: "injection failed: " + e.message };
   }
   if (!extracted) return { ok: false, error: "no result from page" };
-  if (extracted.error) return { ok: false, error: extracted.error };
 
-  // Build the wire body, optionally encrypting the content.
-  let body;
-  if (cfg.encryption_enabled) {
-    const blob = await encryptPayload(extracted.content, cfg.encryption_passphrase);
-    body = { filename: extracted.filename, ...blob };
-  } else {
-    body = { filename: extracted.filename, content: extracted.content };
+  // Fallback: if Readability said "couldn't extract" AND the URL contains
+  // /pdf/ in its path, the page is probably a PDF the URL pattern didn't
+  // catch. Try the PDF flow as a second attempt.
+  if (extracted.error) {
+    try {
+      const u = new URL(tab.url);
+      if (PDF_PATH_RE.test(u.pathname)) {
+        return await clipAsPdf(endpoint, secret, tab, userTags);
+      }
+    } catch { /* ignore */ }
+    return { ok: false, error: extracted.error };
   }
 
   let resp, data;
   try {
-    ({ resp, data } = await postSigned(endpoint, secret, body));
+    ({ resp, data } = await postSigned(endpoint, secret, {
+      filename: extracted.filename,
+      content: extracted.content,
+    }));
   } catch (e) {
     return { ok: false, error: "network: " + e.message };
   }
@@ -218,8 +171,28 @@ async function clipCurrentTab(userTags) {
     file: (data && data.file) || extracted.filename,
     assets_downloaded: (data && data.assets_downloaded) || 0,
     assets_failed: (data && data.assets_failed) || 0,
-    encrypted: !!cfg.encryption_enabled,
   };
+}
+
+async function clipAsPdf(endpoint, secret, tab, userTags) {
+  const title = (tab.title || tab.url || "document").trim();
+  const filename = `${isoFilename(new Date())}-${slugify(title)}.md`;
+  let resp, data;
+  try {
+    ({ resp, data } = await postSigned(endpoint, secret, {
+      filename,
+      pdf_url: tab.url,
+      title,
+      tags: userTags || [],
+    }));
+  } catch (e) {
+    return { ok: false, error: "network: " + e.message };
+  }
+  if (!resp.ok) {
+    const msg = (data && (data.error || data.message)) || `HTTP ${resp.status}`;
+    return { ok: false, error: msg };
+  }
+  return { ok: true, file: (data && data.file) || filename, pdf: true };
 }
 
 ext.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

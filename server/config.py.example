@@ -64,9 +64,19 @@ EXTRACT_PDF_TEXT = True
 # Browse clipped Markdown files from a web browser. Run via:
 #   python web.py        (or the `clipship-web` systemd unit)
 # Disabled by default so receiver-only deployments are unaffected.
+# Access patterns (see docs/setup.md):
+#   - subdomain reverse proxy (recommended)
+#   - subpath reverse proxy with X-Forwarded-Prefix
+#   - SSH port forward for quick local testing
 WEB_UI_ENABLED = False
 WEB_UI_USERNAME = "admin"
 WEB_UI_PASSWORD = ""         # set this before enabling
 WEB_UI_HOST = "127.0.0.1"    # put Nginx in front for TLS
 WEB_UI_PORT = 5051
 WEB_UI_PAGE_SIZE = 30
+
+# When True, the web UI trusts X-Forwarded-Proto / X-Forwarded-Host /
+# X-Forwarded-Prefix from a reverse proxy so links and asset URLs are
+# generated correctly when mounted at a subpath like /ui/. Only safe when
+# WEB_UI_HOST is 127.0.0.1 (i.e. the only client is your reverse proxy).
+WEB_UI_TRUST_PROXY = True

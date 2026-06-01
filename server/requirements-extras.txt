@@ -1,10 +1,6 @@
-# Optional dependencies — install with:
+# Optional dependency — install with:
 #   pip install -r requirements-extras.txt
 #
 # pypdf: enables PDF text extraction. Without it, PDF clips are stored and
-#   linked but contain no extracted body text.
+#   linked but the markdown body contains only the [Open PDF] link.
 pypdf>=4.0
-
-# readability-lxml + html2text: required to run server/bulk_import.py.
-readability-lxml>=0.8.1
-html2text>=2020.1.16

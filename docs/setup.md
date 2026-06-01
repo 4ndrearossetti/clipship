@@ -202,90 +202,105 @@ PDF text extraction needs the optional `pypdf` package:
 Without `pypdf`, the PDF is still downloaded and linked — the body is just
 empty after the link.
 
-## Bulk URL import
-
-Need to seed the inbox from a list of URLs (RSS dump, reading-list export,
-old bookmarks)? Use the CLI on the server:
-
-```bash
-cd /opt/clipship/server
-./venv/bin/pip install -r requirements-extras.txt   # needs readability-lxml + html2text
-./venv/bin/python bulk_import.py urls.txt --tags reading-list,backlog
-```
-
-Options:
-
-- `urls.txt` — one URL per line. `#`-prefixed lines and blanks are ignored.
-- `-` reads URLs from stdin.
-- `--tags a,b,c` applies these tags to every imported clip.
-- `--dry-run` prints the filenames that would be written.
-- `--jobs N` runs `N` parallel fetches (default 4).
-
-Imports reuse the same SSRF guard as live clips and run image localization
-if `DOWNLOAD_ASSETS` is on.
-
 ## Web UI
 
 A read-only browser for the inbox: list, search, view, filter by tag.
-Disabled by default. To turn it on:
+Disabled by default. The receiver binds to `127.0.0.1` for safety, so you
+need one of the access patterns below to view it from your laptop.
+
+### Configure
 
 ```python
 # config.py
-WEB_UI_ENABLED  = True
-WEB_UI_USERNAME = "admin"
-WEB_UI_PASSWORD = "..."  # any non-empty value; use a long random one
-WEB_UI_HOST     = "127.0.0.1"
-WEB_UI_PORT     = 5051
+WEB_UI_ENABLED     = True
+WEB_UI_USERNAME    = "admin"
+WEB_UI_PASSWORD    = "..."   # use a long random value
+WEB_UI_HOST        = "127.0.0.1"
+WEB_UI_PORT        = 5051
+WEB_UI_TRUST_PROXY = True    # honour X-Forwarded-* from your reverse proxy
 ```
 
-Run it:
+### Run it
+
+Foreground:
 
 ```bash
-cd /opt/clipship/server
 ./venv/bin/python web.py
 ```
 
-Or via systemd:
+systemd:
 
 ```bash
 sudo cp clipship-web.service /etc/systemd/system/
 sudo systemctl enable --now clipship-web
 ```
 
-Put nginx in front for TLS the same way as the receiver — add another
-`location` (or a separate server block on a different hostname):
+### Access pattern A — dedicated subdomain (recommended for daily use)
+
+Set up `ui.clip.example.com` (or any subdomain you control) and reverse-proxy
+the whole thing. Easiest because there's no URL-prefix rewriting:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name ui.clip.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/ui.clip.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ui.clip.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5051;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Then browse to `https://ui.clip.example.com` — Basic-auth prompt appears,
+you log in, you're done.
+
+### Access pattern B — subpath on your existing domain
+
+If you already have `clip.example.com` for the receiver, add a `/ui/` path:
 
 ```nginx
 location /ui/ {
     proxy_pass http://127.0.0.1:5051/;
-    proxy_set_header X-Real-IP $remote_addr;
-    auth_basic off;   # the app does its own basic auth
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /ui;
 }
 ```
 
-The UI shows tags as clickable chips, badges for encrypted and PDF clips,
-and (`?q=...`) full-text search across titles, tags, sources, and bodies.
-Encrypted clips render a notice with the decryption parameters instead of
-the body — only the extension (with the passphrase) can show the content.
+The `X-Forwarded-Prefix` header tells the Flask app it's mounted at `/ui/`
+so internal links and asset URLs come out as `/ui/clip/…` and
+`/ui/assets/…` instead of `/clip/…`. Requires `WEB_UI_TRUST_PROXY = True`
+in `config.py` (the default).
 
-## Optional: end-to-end encryption
+### Access pattern C — SSH port forward (quick, no nginx changes)
 
-Off by default. When enabled in the extension's settings panel, the
-extension encrypts the Markdown content with AES-GCM-256 (key derived from
-your passphrase via PBKDF2-SHA256, 600 000 iterations) before sending. The
-server stores ciphertext only; asset download is auto-skipped because the
-server cannot see the image URLs.
+If you don't want to touch nginx, tunnel the port over SSH:
 
-Threat model:
+```bash
+# On your laptop:
+ssh -L 5051:127.0.0.1:5051 your-user@your-server
+```
 
-- Protects clips against a server compromise — disk reads yield ciphertext.
-- Protects clips against TLS interception at layers below your own.
-- Does **not** protect against device theft — the passphrase lives in
-  `chrome.storage.local`. Pick one only your future self knows if that
-  matters to your threat model, and re-enter it on each browser you want
-  to clip from.
-- The receiver's HMAC + replay protections still apply. Clipping requests
-  are still rejected if the signature is wrong or the timestamp is stale.
+Leave that SSH session open and browse to <http://localhost:5051> on your
+laptop. The traffic is encrypted by SSH; the server still only binds to
+loopback. Closing the tunnel (or SSH session) closes the access.
+
+This is the fastest way to try the web UI before committing to a proxy
+config.
+
+### What you get
+
+Tags are clickable chips, PDF clips get a `pdf` badge, and `?q=…` does
+full-text search across titles, tags, sources, and bodies.
 
 ## Troubleshooting
 

@@ -38,11 +38,11 @@ internet but is only ever written to by the user's own browser.
   scripts, not to other extensions without explicit permission, and not
   synced to any cloud. It is never sent in plaintext as a header or query
   string. The user is responsible for choosing a strong secret (see below).
-- **Content confidentiality.** By default, the body is JSON, signed but not
-  encrypted at the application layer; TLS on the wire is sufficient for a
-  personal tool whose attacker model does not include a compromised CA. If
-  that does describe your model, enable the opt-in end-to-end encryption (see
-  below) — the server then stores ciphertext it cannot read.
+- **Content confidentiality.** The body is JSON, signed but not encrypted
+  at the application layer. TLS on the wire is sufficient for a personal
+  tool whose attacker model does not include a compromised CA. If that
+  does describe your model, terminate TLS yourself with a pinned
+  certificate or use a separate transport layer.
 - **Server clock integrity.** The replay window depends on the server clock
   being roughly correct. Run NTP.
 - **Denial of service.** A peer with internet access can hit the endpoint as
@@ -54,53 +54,14 @@ internet but is only ever written to by the user's own browser.
   dependencies make this tractable: the only network destination is the
   user-configured endpoint, and the only stored data is `{endpoint, secret}`.
 
-## End-to-end encryption (opt-in)
-
-Off by default. When enabled in the extension settings, every clip is
-encrypted client-side before being POSTed:
-
-- **Key derivation:** PBKDF2-HMAC-SHA256, 600 000 iterations, 16-byte
-  random salt per clip.
-- **Cipher:** AES-GCM, 256-bit key, 12-byte random nonce per clip,
-  16-byte authentication tag.
-- **Plaintext input:** the complete Markdown body (frontmatter + content).
-- **Wire format:** the JSON payload carries `encrypted: true` plus the
-  algorithm, KDF, iteration count, salt, IV and base64 ciphertext. No
-  `content` field is sent.
-- **On disk:** the server writes a Markdown file whose frontmatter records
-  every parameter needed to decrypt, and whose body is the base64
-  ciphertext.
-
-What encryption gives you:
-
-- A server compromise yields ciphertext only — no clip body is readable
-  without the passphrase.
-- A TLS interception that gets past your CA still surfaces only
-  ciphertext bound by an authenticated GCM tag.
-- The web UI and the asset downloader correctly refuse to operate on
-  encrypted clips, so nothing leaks through them.
-
-What it does not protect against:
-
-- **Device compromise.** The passphrase lives in `chrome.storage.local`
-  for UX; an attacker with the machine has the key. Re-enter the
-  passphrase in a fresh browser if that matters.
-- **Brute force on a weak passphrase.** PBKDF2 makes guessing more
-  expensive per attempt but cannot rescue a low-entropy passphrase.
-  Treat it like a password manager master password.
-- **Image confidentiality.** When encryption is on, server-side asset
-  download is automatically disabled (the server cannot see image URLs
-  inside ciphertext). Images stay as remote references in the
-  ciphertext, fetched by whatever client decrypts the clip later.
-
 ## Web UI
 
-The optional web UI exposes the inbox over HTTP Basic auth (constant-time
-comparison via `hmac.compare_digest`). The systemd unit runs the service
-with `ReadOnlyPaths=<inbox>`, so even a compromised UI process cannot
-modify the data it serves. Encrypted clips are never decrypted by the UI —
-the server doesn't have the passphrase — so a UI compromise still cannot
-recover encrypted clip bodies.
+The optional web UI exposes the inbox over HTTP Basic auth, with the
+credential check done in constant time via `hmac.compare_digest`. The
+systemd unit runs the service with `ReadOnlyPaths=<inbox>`, so even a
+compromised UI process cannot modify the data it serves. It binds to
+`127.0.0.1` by default — public access requires terminating TLS in front
+of it via the same reverse proxy you already use for `/clip`.
 
 ## Secret strength
 

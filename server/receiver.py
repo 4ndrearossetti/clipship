@@ -182,9 +182,17 @@ def _ext_for(content_type: str, url: str) -> str:
 
 
 def _fetch_url(url: str, max_bytes: int, timeout: float, accept: str) -> tuple[bytes, str] | None:
-    """Generic SSRF-guarded URL fetcher with size + timeout caps."""
-    if not _url_is_safe(url):
+    """Generic SSRF-guarded URL fetcher. Returns (bytes, content_type) or None."""
+    data, ct, _err = _fetch_url_verbose(url, max_bytes, timeout, accept)
+    if data is None:
         return None
+    return data, ct
+
+
+def _fetch_url_verbose(url: str, max_bytes: int, timeout: float, accept: str) -> tuple[bytes | None, str, str]:
+    """Like _fetch_url, but also returns a short human-readable failure reason."""
+    if not _url_is_safe(url):
+        return None, "", "URL refused by SSRF guard (private IP, non-http scheme, or DNS failure)"
     req = urllib.request.Request(url, headers={
         "User-Agent": ASSET_USER_AGENT,
         "Accept": accept,
@@ -196,15 +204,19 @@ def _fetch_url(url: str, max_bytes: int, timeout: float, accept: str) -> tuple[b
             if clen:
                 try:
                     if int(clen) > max_bytes:
-                        return None
+                        return None, ct, f"Content-Length {clen} exceeds {max_bytes}-byte cap"
                 except ValueError:
                     pass
             data = resp.read(max_bytes + 1)
             if len(data) > max_bytes:
-                return None
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-    return data, ct
+                return None, ct, f"body exceeded {max_bytes}-byte cap"
+    except urllib.error.HTTPError as e:
+        return None, "", f"upstream HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return None, "", f"network: {e.reason}"
+    except (OSError, ValueError) as e:
+        return None, "", f"fetch error: {e}"
+    return data, ct, ""
 
 
 def _fetch_asset(url: str) -> tuple[bytes, str] | None:
@@ -279,7 +291,7 @@ def _localize_assets(md_stem: str, content: str) -> tuple[str, int, int]:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Markdown / encrypted / PDF handlers
+# PDF handler
 # ---------------------------------------------------------------------------
 
 def _yaml_escape(s: str) -> str:
@@ -301,30 +313,6 @@ def _build_pdf_frontmatter(meta: dict, pdf_relpath: str) -> str:
     return "\n".join(lines)
 
 
-def _build_encrypted_file(payload: dict) -> str:
-    """Render an encrypted clip as a self-describing .md file. The body is the
-    base64 ciphertext, the frontmatter records the parameters needed to decrypt."""
-    lines = ["---", "encrypted: true"]
-    for k in ("algorithm", "kdf", "kdf_iterations", "salt", "iv"):
-        v = payload.get(k)
-        if v is None:
-            continue
-        if isinstance(v, (int, float)):
-            lines.append(f"{k}: {v}")
-        else:
-            lines.append(f'{k}: "{_yaml_escape(str(v))}"')
-    lines.append(f'clipped: "{_yaml_escape(_iso_now())}"')
-    tags = payload.get("tags") or []
-    if isinstance(tags, list) and tags:
-        inner = ", ".join('"' + _yaml_escape(str(t)) + '"' for t in tags)
-        lines.append(f"tags: [{inner}]")
-    lines.append("---")
-    lines.append("")
-    lines.append(payload.get("ciphertext", ""))
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _iso_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -337,10 +325,19 @@ def _handle_pdf(target: Path, payload: dict) -> tuple[str, dict]:
     if not DOWNLOAD_PDFS:
         raise ValueError("PDF downloads are disabled on this server")
 
-    res = _fetch_url(pdf_url, MAX_PDF_BYTES, PDF_TIMEOUT, "application/pdf,*/*;q=0.1")
-    if not res:
-        raise ValueError("could not fetch PDF (size cap, timeout, or SSRF block)")
-    data, _ct = res
+    data, ct, err = _fetch_url_verbose(
+        pdf_url, MAX_PDF_BYTES, PDF_TIMEOUT, "application/pdf,*/*;q=0.1"
+    )
+    if data is None:
+        raise ValueError(f"could not fetch PDF: {err}")
+    # Light content-type sanity check — some servers omit it, so we don't
+    # hard-fail when missing, but a clearly-non-PDF response is rejected.
+    ct_lc = (ct or "").lower().split(";", 1)[0].strip()
+    if ct_lc and not (ct_lc == "application/pdf" or ct_lc.endswith("/pdf")
+                      or ct_lc == "application/octet-stream"):
+        # Also accept a PDF magic-number prefix in case the server lied.
+        if not data.startswith(b"%PDF-"):
+            raise ValueError(f"upstream returned non-PDF content ({ct_lc or 'unknown type'})")
 
     assets_root = OUTPUT_DIR / ASSETS_SUBDIR
     assets_root.mkdir(parents=True, exist_ok=True)
@@ -418,9 +415,8 @@ def clip():
     if OUTPUT_DIR not in target.resolve().parents and target.resolve() != OUTPUT_DIR:
         return _err(400, "path traversal detected")
 
-    # Branch on payload shape: pdf, encrypted, or plain markdown.
+    # Branch on payload shape: pdf or plain markdown.
     is_pdf = bool(payload.get("pdf_url"))
-    is_encrypted = bool(payload.get("encrypted"))
 
     assets_downloaded = 0
     assets_failed = 0
@@ -431,12 +427,6 @@ def clip():
             content, extra = _handle_pdf(target, payload)
         except ValueError as e:
             return _err(400, str(e))
-    elif is_encrypted:
-        # Validate the encrypted-payload fields.
-        for f in ("algorithm", "kdf", "salt", "iv", "ciphertext"):
-            if not isinstance(payload.get(f), (str, int)) or not payload.get(f):
-                return _err(400, f"encrypted payload missing field: {f}")
-        content = _build_encrypted_file(payload)
     else:
         content = payload.get("content")
         if not isinstance(content, str) or not content:
@@ -452,8 +442,6 @@ def clip():
         "assets_failed": assets_failed,
     }
     response.update(extra)
-    if is_encrypted:
-        response["encrypted"] = True
     if is_pdf:
         response["pdf"] = True
     return jsonify(response)

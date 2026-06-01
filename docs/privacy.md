@@ -11,9 +11,6 @@ The browser extension persists the following in `chrome.storage.local`
 
 - `endpoint` — the URL of your receiver, as you typed it.
 - `secret` — the HMAC-SHA256 shared secret, as you typed it.
-- `encryption_enabled` — boolean, whether E2E encryption is on.
-- `encryption_passphrase` — only set if you enabled E2E encryption. Used
-  to derive the AES-GCM key on each clip. Never transmitted.
 
 That is the complete list. No telemetry, analytics IDs, install IDs,
 session tokens, or page-visit history is stored or transmitted by the
@@ -31,9 +28,6 @@ When you click **Clip this page**:
   alongside auto-extracted tags from page meta elements.
 - If the tab is a PDF, the page content is **not** read; instead, the PDF
   URL itself is sent so the server can download it.
-- If E2E encryption is enabled, the markdown content is encrypted with
-  AES-GCM-256 before being placed in the request body. The passphrase is
-  never sent.
 
 No other network requests are made. The extension does not contact any
 analytics service, update server, or third-party domain.
@@ -55,8 +49,6 @@ The server can make outbound HTTP requests to:
 - Image URLs found inside clipped Markdown, when `DOWNLOAD_ASSETS` is on.
 - PDF URLs sent by the extension's PDF clip flow, when `DOWNLOAD_PDFS`
   is on.
-- The URLs you give to `server/bulk_import.py` on the command line, when
-  you run that tool.
 
 Each outbound request is SSRF-validated: schemes other than `http(s)`
 are refused; hosts that resolve to private, loopback, link-local, CGNAT,

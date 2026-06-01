@@ -12,16 +12,12 @@
 - **Self-contained clips** — the server downloads every image referenced in the
   Markdown into `assets/`, with SSRF guards, size and timeout caps. No more
   broken images when viewing offline or in privacy-preserving renderers.
-- **PDF clipping** — click the icon on a `.pdf` tab and the server downloads
-  the file, stores it next to the Markdown, and extracts the text body (with
-  `pypdf`).
-- **Bulk URL import** — `server/bulk_import.py` ingests a file of URLs in
-  parallel, runs the same extractor server-side, writes straight to the inbox.
+- **PDF clipping** — click the icon on a `.pdf` or `/pdf/` tab and the server
+  downloads the file, stores it next to the Markdown, and extracts the text
+  body (with `pypdf`).
 - **Web UI** — optional Flask read-only browser: list, search, filter by tag,
-  view rendered Markdown with images. HTTP-Basic-auth-gated, off by default.
-- **Optional end-to-end encryption** — AES-GCM-256, passphrase-derived via
-  PBKDF2-SHA256 (600 000 iterations). The server stores ciphertext and cannot
-  read encrypted clips.
+  view rendered Markdown with images. HTTP-Basic-auth-gated, off by default,
+  reverse-proxy-friendly.
 - **Signed payloads** — HMAC-SHA256 over `timestamp + "." + body`, ±5 minute
   replay window, constant-time signature comparison server-side.
 - **No third parties** — the extension talks only to your endpoint; the server
@@ -82,21 +78,20 @@ clipship/
 ├── extension/
 │   ├── manifest.json              # MV3, minimal permissions
 │   ├── popup.html / popup.js      # UI: config + tags + clip + status
-│   ├── background.js              # Signs + POSTs + handles PDF / E2E
+│   ├── background.js              # Signs + POSTs + handles PDF flow
 │   ├── content.js                 # Readability + HTML→Markdown + tag extraction
 │   ├── Readability.js             # Mozilla Readability (vendored)
-│   ├── build.sh                   # Lint + package via web-ext
+│   ├── build.sh                   # Builds Chrome + Firefox zips via web-ext
 │   └── icons/
 │
 ├── server/
-│   ├── receiver.py                # Flask /clip endpoint (HMAC, assets, PDFs, E2E)
+│   ├── receiver.py                # Flask /clip endpoint (HMAC, assets, PDFs)
 │   ├── web.py                     # Optional web UI (read-only, basic auth)
-│   ├── bulk_import.py             # CLI: import a file of URLs in parallel
-│   ├── test_clipship.py           # Unittest suite (19 tests)
+│   ├── test_clipship.py           # Unittest suite (21 tests)
 │   ├── config.py                  # Your config (gitignored)
 │   ├── config.py.example          # Template
 │   ├── requirements.txt           # Flask + markdown
-│   ├── requirements-extras.txt    # pypdf, readability-lxml, html2text
+│   ├── requirements-extras.txt    # pypdf (optional, for PDF text)
 │   ├── clipship.service           # systemd unit for the receiver
 │   └── clipship-web.service       # systemd unit for the web UI
 │
@@ -122,18 +117,18 @@ clipship/
 │  background.js                     │  HTTPS  │   receiver.py (Flask)   │
 │   • inject Readability + content   │         │   1. verify HMAC + time │
 │   • read window.__clipshipResult   │         │   2. sanitize filename  │
-│   • optional AES-GCM encrypt       │         │   3. download images    │
-│   • HMAC-sign + fetch              │         │      → assets/          │
-│            │                       │         │   4. write .md          │
-│            ▼  (page DOM stays here)│         │           │             │
-│  content.js (one-shot, in page)    │         │           ▼             │
-│   • Readability.parse              │         │   OUTPUT_DIR/*.md       │
-│   • HTML → Markdown                │         │   OUTPUT_DIR/assets/    │
-│   • auto-extract meta tags         │         │                         │
-│   • build frontmatter w/ user tags │         │   web.py (optional)     │
-│            │                       │         │   • Basic-auth          │
-│            ▼  (returns via msg)    │         │   • lists clips         │
-└────────────────────────────────────┘         │   • renders markdown    │
+│   • HMAC-sign + fetch              │         │   3. download images    │
+│            │                       │         │      → assets/          │
+│            ▼  (page DOM stays here)│         │   4. write .md          │
+│  content.js (one-shot, in page)    │         │           │             │
+│   • Readability.parse              │         │           ▼             │
+│   • HTML → Markdown                │         │   OUTPUT_DIR/*.md       │
+│   • auto-extract meta tags         │         │   OUTPUT_DIR/assets/    │
+│   • build frontmatter w/ user tags │         │                         │
+│            │                       │         │   web.py (optional)     │
+│            ▼  (returns via msg)    │         │   • Basic-auth          │
+└────────────────────────────────────┘         │   • lists clips         │
+                                                │   • renders markdown    │
                                                 │   • tag filter + search │
                                                 └─────────────────────────┘
 ```
@@ -149,13 +144,12 @@ Content-Type: application/json
 { "filename": "...md", "content": "---\ntitle: ...\n..." }
 ```
 
-Three other payload shapes:
+Two payload shapes:
 
-| Shape | Trigger | Extra fields |
+| Shape | Trigger | Fields |
 |---|---|---|
-| Plain markdown | normal clip | `content` |
-| Encrypted | `encryption_enabled = true` | `encrypted`, `algorithm`, `kdf`, `kdf_iterations`, `salt`, `iv`, `ciphertext` (no `content`) |
-| PDF | tab URL matches `.pdf(?\|#\|$)` | `pdf_url`, `title`, `tags` (no `content`) |
+| Plain markdown | normal clip | `filename`, `content` |
+| PDF | tab URL matches `.pdf(?\|#\|$)` or `/pdf/` | `filename`, `pdf_url`, `title`, `tags` |
 
 Detailed reference: [`docs/setup.md`](docs/setup.md).
 [`docs/security.md`](docs/security.md) describes the threat model.

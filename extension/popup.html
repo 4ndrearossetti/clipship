@@ -150,15 +150,6 @@
     <input type="password" id="secret" placeholder="hex-encoded shared secret" autocomplete="off" spellcheck="false">
     <div class="hint">Must match SECRET_KEY in your server config.</div>
 
-    <label style="display: flex; align-items: center; gap: 6px; margin-top: 10px; cursor: pointer;">
-      <input type="checkbox" id="encryption-enabled" style="margin: 0;">
-      <span>Encrypt clip content (E2E)</span>
-    </label>
-    <div id="encryption-passphrase-row" class="hidden" style="margin-top: 6px;">
-      <input type="password" id="encryption-passphrase" placeholder="encryption passphrase" autocomplete="off" spellcheck="false">
-      <div class="hint">Stored locally; never sent to the server. Asset download and the web UI cannot decrypt clips — only the extension can.</div>
-    </div>
-
     <div class="row">
       <button id="cancel-btn">Cancel</button>
       <button class="primary" id="save-btn">Save</button>

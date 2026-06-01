@@ -132,36 +132,50 @@ class ReceiverTests(unittest.TestCase):
         self.assertEqual(r1.json["file"], "dup.md")
         self.assertEqual(r2.json["file"], "dup-1.md")
 
-    def test_encrypted_payload(self):
-        body = json.dumps({
-            "filename": "enc.md",
-            "encrypted": True,
-            "algorithm": "AES-GCM-256",
-            "kdf": "PBKDF2-SHA256",
-            "kdf_iterations": 600000,
-            "salt": base64.b64encode(b"a" * 16).decode(),
-            "iv": base64.b64encode(b"b" * 12).decode(),
-            "ciphertext": base64.b64encode(b"ciphertext-bytes").decode(),
-            "tags": ["secret"],
-        }).encode()
-        r = _signed_post(self.client, body)
-        self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json.get("encrypted"))
-        text = (Path(self.tmp) / "enc.md").read_text()
-        self.assertIn("encrypted: true", text)
-        self.assertIn("kdf_iterations: 600000", text)
-        self.assertIn(base64.b64encode(b"ciphertext-bytes").decode(), text)
-
-    def test_encrypted_missing_field(self):
-        body = json.dumps({
-            "filename": "bad.md",
-            "encrypted": True,
-            "algorithm": "AES-GCM-256",
-            # missing kdf/salt/iv/ciphertext
-        }).encode()
-        r = _signed_post(self.client, body)
+    def test_pdf_payload_rejects_non_pdf_content(self):
+        # Mock the URL fetcher to return obviously-not-a-PDF bytes.
+        with mock.patch.object(
+            self.receiver, "_fetch_url_verbose",
+            return_value=(b"<html>not a pdf</html>", "text/html", ""),
+        ):
+            body = json.dumps({
+                "filename": "not-a-pdf.md",
+                "pdf_url": "https://example.com/foo.pdf",
+                "title": "Not a PDF",
+            }).encode()
+            r = _signed_post(self.client, body)
         self.assertEqual(r.status_code, 400)
-        self.assertIn("missing field", r.json["error"])
+        self.assertIn("non-PDF", r.json["error"])
+
+    def test_pdf_payload_accepts_pdf_magic_number(self):
+        # Server lies about Content-Type but the body has the PDF magic
+        # number — accept it.
+        fake_pdf = b"%PDF-1.4\n" + b"\x00" * 200 + b"%%EOF"
+        with mock.patch.object(
+            self.receiver, "_fetch_url_verbose",
+            return_value=(fake_pdf, "application/octet-stream", ""),
+        ):
+            body = json.dumps({
+                "filename": "magic.md",
+                "pdf_url": "https://example.com/foo",
+                "title": "PDF",
+            }).encode()
+            r = _signed_post(self.client, body)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json.get("pdf"))
+
+    def test_pdf_payload_fetch_failure_surfaces_reason(self):
+        with mock.patch.object(
+            self.receiver, "_fetch_url_verbose",
+            return_value=(None, "", "upstream HTTP 404"),
+        ):
+            body = json.dumps({
+                "filename": "missing.md",
+                "pdf_url": "https://example.com/missing.pdf",
+            }).encode()
+            r = _signed_post(self.client, body)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("HTTP 404", r.json["error"])
 
     def test_ssrf_url_validation(self):
         # Direct IP literal blocked
@@ -203,12 +217,12 @@ class WebUITests(unittest.TestCase):
         self.web = importlib.import_module("web")
         self.client = self.web.app.test_client()
 
-        # Seed the inbox with one of each kind.
+        # Seed the inbox with one plain clip and one PDF stub.
         (Path(self.tmp) / "2026-05-31-plain.md").write_text(
             '---\ntitle: "Plain"\nsource: "https://example.com"\nclipped: "2026-05-31T00:00:00Z"\ntags: ["a", "b"]\n---\n\nBody.\n'
         )
-        (Path(self.tmp) / "2026-05-31-enc.md").write_text(
-            '---\nencrypted: true\nalgorithm: "AES-GCM-256"\nkdf: "PBKDF2-SHA256"\nkdf_iterations: 600000\nsalt: "AAAA"\niv: "BBBB"\nclipped: "2026-05-31T00:00:00Z"\ntags: ["secret"]\n---\n\nCIPHERTEXT\n'
+        (Path(self.tmp) / "2026-05-31-pdf.md").write_text(
+            '---\ntitle: "PDF"\nsource: "https://example.com/foo.pdf"\nclipped: "2026-05-31T00:00:00Z"\ntype: "pdf"\npdf: "assets/2026-05-31-pdf.pdf"\n---\n\n[Open PDF](assets/2026-05-31-pdf.pdf)\n'
         )
 
     def tearDown(self):
@@ -232,29 +246,35 @@ class WebUITests(unittest.TestCase):
         r = self.client.get("/", headers=self._auth())
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Plain", r.data)
-        self.assertIn(b"encrypted", r.data)
+        self.assertIn(b"PDF", r.data)
 
     def test_clip_view_plain(self):
         r = self.client.get("/clip/2026-05-31-plain.md", headers=self._auth())
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Body.", r.data)
 
-    def test_clip_view_encrypted_hides_body(self):
-        r = self.client.get("/clip/2026-05-31-enc.md", headers=self._auth())
-        self.assertEqual(r.status_code, 200)
-        self.assertIn(b"end-to-end encrypted", r.data)
-        self.assertNotIn(b"CIPHERTEXT", r.data)  # body is not rendered for encrypted clips
+    def test_pdf_badge_present(self):
+        r = self.client.get("/", headers=self._auth())
+        self.assertIn(b'class="badge">pdf<', r.data)
 
     def test_tag_filter(self):
-        r = self.client.get("/tag/secret", headers=self._auth())
+        r = self.client.get("/tag/a", headers=self._auth())
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"2026-05-31-enc.md", r.data)
-        self.assertNotIn(b"2026-05-31-plain.md", r.data)
+        self.assertIn(b"2026-05-31-plain.md", r.data)
+        self.assertNotIn(b"2026-05-31-pdf.md", r.data)
 
     def test_search_by_title(self):
         r = self.client.get("/?q=plain", headers=self._auth())
         self.assertIn(b"2026-05-31-plain.md", r.data)
-        self.assertNotIn(b"2026-05-31-enc.md", r.data)
+        self.assertNotIn(b"2026-05-31-pdf.md", r.data)
+
+    def test_proxy_fix_honours_prefix(self):
+        r = self.client.get(
+            "/", headers={**self._auth(), "X-Forwarded-Prefix": "/ui"}
+        )
+        self.assertEqual(r.status_code, 200)
+        # url_for should now generate /ui/-prefixed links
+        self.assertIn(b'href="/ui/clip/', r.data)
 
     def test_clip_404_traversal(self):
         r = self.client.get("/clip/../../etc/passwd", headers=self._auth())

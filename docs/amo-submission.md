@@ -22,17 +22,22 @@ you want CI-driven signing later, see "Automated signing" at the bottom.)
 ```bash
 cd extension
 ./build.sh
-# → web-ext-artifacts/clipship-1.0.0.zip
+# → web-ext-artifacts/clipship-chrome-<version>.zip
+# → web-ext-artifacts/clipship-firefox-<version>.zip
 ```
 
-This runs `web-ext lint` (which is configured via `web-ext-config.cjs`
-to exclude `build.sh` and the artifacts directory from packaging), then
-`web-ext build`. The expected lint output on a clean working tree is:
+The Firefox build adds `background.scripts: ["background.js"]` alongside
+`service_worker` (Mozilla's linter requires both keys for MV3). The Chrome
+build keeps only `service_worker` so the Chrome `chrome://extensions`
+page doesn't show the "background.scripts requires manifest version of 2
+or lower" warning. Both zips are built from the same source tree —
+`build.sh` synthesises the Firefox manifest in a staging directory.
+
+The expected lint output on a clean working tree is:
 
 ```
-0 errors, 3 warnings
-  WARN BACKGROUND_SERVICE_WORKER_IGNORED   (cross-browser background fallback)
-  WARN UNSAFE_VAR_ASSIGNMENT × 2           (Readability.js, Mozilla's own code)
+0 errors, 2 warnings
+  WARN UNSAFE_VAR_ASSIGNMENT × 2   (Readability.js, Mozilla's own code)
 ```
 
 All three warnings are expected and do not block AMO approval:
@@ -51,7 +56,8 @@ All three warnings are expected and do not block AMO approval:
 1. Go to <https://addons.mozilla.org/developers/addon/submit/distribution>.
 2. Choose **On this site** (lists the extension on AMO and signs it).
    Pick **On your own** for self-hosted signed XPI without the listing.
-3. Upload `web-ext-artifacts/clipship-1.0.0.zip`.
+3. Upload `web-ext-artifacts/clipship-firefox-<version>.zip` (the Firefox
+   variant — the Chrome zip is for self-install only and is not for AMO).
 4. AMO will run validation. The same three warnings will appear; click
    continue.
 5. Fill in the listing fields below.
@@ -105,10 +111,6 @@ archive to live on their own server, not in someone else's cloud.
 - PDF clipping: clipping a tab whose URL points at a PDF sends the
   URL to the server, which stores the PDF and (optionally) extracts
   its text.
-- Optional end-to-end encryption: when enabled, the content is
-  encrypted with AES-GCM-256 (passphrase-derived via PBKDF2-SHA256,
-  600 000 iterations) before leaving the browser. The server stores
-  ciphertext and cannot read your clips.
 - Replay protection (signed timestamp window) and TLS recommended
   for transport security.
 
@@ -210,15 +212,10 @@ If a human reviewer asks:
   the version vendored at commit time. Used to extract the article
   body from the active page.
 
-- **"Why is `service_worker` declared if Firefox ignores it?"** —
-  The same source bundle is loaded into Chrome and Firefox. Chrome's
-  MV3 requires `background.service_worker`; Firefox's MV3 requires
-  `background.scripts`. Both keys are present so each browser uses
-  the field it understands.
-
-- **"What does the optional encryption do?"** — When the user enables
-  it in settings, the markdown body is encrypted with AES-GCM-256 via
-  Web Crypto using a passphrase-derived key (PBKDF2-SHA256, 600 000
-  iterations) before the POST. The passphrase is stored only in
-  `chrome.storage.local`. The encrypted-payload server side simply
-  writes the ciphertext to disk.
+- **"Why is `background.scripts` declared alongside `service_worker`?"** —
+  Chrome MV3 requires `background.service_worker`; Mozilla's
+  addons-linter recommends `background.scripts` as a Firefox fallback.
+  Both keys are present in the Firefox build only (the Chrome build
+  drops `background.scripts` to avoid the "MV2 or lower" warning that
+  Chrome shows). The build script (`extension/build.sh`) produces two
+  zips, one per browser, from the same source tree.
