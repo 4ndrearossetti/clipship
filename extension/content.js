@@ -7,6 +7,17 @@
     return walk(doc.body).trim().replace(/\n{3,}/g, "\n\n");
   }
 
+  // Common emoji-CDN paths used by Twitter/X, WordPress, GitHub, Slack, etc.
+  const EMOJI_URL_RE = /(\/emoji[\/.]|twemoji|\/emojis?\/[\da-f-]+\.(svg|png))/i;
+  // Unicode codepoints that always render as pictographs.
+  const EMOJI_TEXT_RE = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
+
+  function isEmojiImg(src, alt) {
+    if (alt && alt.length <= 4 && EMOJI_TEXT_RE.test(alt)) return true;
+    if (src && EMOJI_URL_RE.test(src)) return true;
+    return false;
+  }
+
   function escapeMd(s) {
     return s.replace(/([\\`*_{}\[\]()#+\-.!>|])/g, "\\$1");
   }
@@ -66,8 +77,12 @@
       }
       case "img": {
         const src = node.getAttribute("src") || "";
-        const alt = node.getAttribute("alt") || "";
-        if (!src) return "";
+        const alt = (node.getAttribute("alt") || "").trim();
+        if (!src) return alt; // image with no src — fall back to alt text
+        // Emoji-as-image: many sites (Twitter/X, WordPress, GitHub, Slack…)
+        // serve emojis as SVG/PNG <img> tags with the Unicode emoji in `alt`.
+        // Rendering them as standalone images is awful; emit the text instead.
+        if (isEmojiImg(src, alt)) return alt || "";
         return "![" + alt + "](" + src + ")";
       }
       case "ul":
