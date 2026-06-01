@@ -38,11 +38,11 @@ internet but is only ever written to by the user's own browser.
   scripts, not to other extensions without explicit permission, and not
   synced to any cloud. It is never sent in plaintext as a header or query
   string. The user is responsible for choosing a strong secret (see below).
-- **Content confidentiality.** The body is JSON, signed but not encrypted at
-  the application layer. TLS on the wire is sufficient for a personal tool
-  whose attacker model does not include a compromised CA. If that does
-  describe your model, terminate TLS yourself with a pinned certificate or
-  add a separate transport layer.
+- **Content confidentiality.** The body is JSON, signed but not encrypted
+  at the application layer. TLS on the wire is sufficient for a personal
+  tool whose attacker model does not include a compromised CA. If that
+  does describe your model, terminate TLS yourself with a pinned
+  certificate or use a separate transport layer.
 - **Server clock integrity.** The replay window depends on the server clock
   being roughly correct. Run NTP.
 - **Denial of service.** A peer with internet access can hit the endpoint as
@@ -53,6 +53,15 @@ internet but is only ever written to by the user's own browser.
   process beyond the user's own. Manifest V3 minimal permissions and vendored
   dependencies make this tractable: the only network destination is the
   user-configured endpoint, and the only stored data is `{endpoint, secret}`.
+
+## Web UI
+
+The optional web UI exposes the inbox over HTTP Basic auth, with the
+credential check done in constant time via `hmac.compare_digest`. The
+systemd unit runs the service with `ReadOnlyPaths=<inbox>`, so even a
+compromised UI process cannot modify the data it serves. It binds to
+`127.0.0.1` by default — public access requires terminating TLS in front
+of it via the same reverse proxy you already use for `/clip`.
 
 ## Secret strength
 

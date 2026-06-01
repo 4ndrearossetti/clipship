@@ -7,6 +7,17 @@
     return walk(doc.body).trim().replace(/\n{3,}/g, "\n\n");
   }
 
+  // Common emoji-CDN paths used by Twitter/X, WordPress, GitHub, Slack, etc.
+  const EMOJI_URL_RE = /(\/emoji[\/.]|twemoji|\/emojis?\/[\da-f-]+\.(svg|png))/i;
+  // Unicode codepoints that always render as pictographs.
+  const EMOJI_TEXT_RE = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
+
+  function isEmojiImg(src, alt) {
+    if (alt && alt.length <= 4 && EMOJI_TEXT_RE.test(alt)) return true;
+    if (src && EMOJI_URL_RE.test(src)) return true;
+    return false;
+  }
+
   function escapeMd(s) {
     return s.replace(/([\\`*_{}\[\]()#+\-.!>|])/g, "\\$1");
   }
@@ -66,8 +77,12 @@
       }
       case "img": {
         const src = node.getAttribute("src") || "";
-        const alt = node.getAttribute("alt") || "";
-        if (!src) return "";
+        const alt = (node.getAttribute("alt") || "").trim();
+        if (!src) return alt; // image with no src — fall back to alt text
+        // Emoji-as-image: many sites (Twitter/X, WordPress, GitHub, Slack…)
+        // serve emojis as SVG/PNG <img> tags with the Unicode emoji in `alt`.
+        // Rendering them as standalone images is awful; emit the text instead.
+        if (isEmojiImg(src, alt)) return alt || "";
         return "![" + alt + "](" + src + ")";
       }
       case "ul":
@@ -146,8 +161,44 @@
     if (meta.byline)   lines.push(`author: "${escapeYaml(meta.byline)}"`);
     if (meta.siteName) lines.push(`site: "${escapeYaml(meta.siteName)}"`);
     lines.push(`clipped: "${meta.clipped}"`);
+    if (meta.tags && meta.tags.length) {
+      const inner = meta.tags.map(t => `"${escapeYaml(t)}"`).join(", ");
+      lines.push(`tags: [${inner}]`);
+    }
     lines.push("---");
     return lines.join("\n");
+  }
+
+  function extractMetaTags() {
+    const out = new Set();
+    const push = (s) => {
+      if (!s) return;
+      String(s)
+        .split(/[,;|]/)
+        .map(t => t.trim())
+        .filter(Boolean)
+        .filter(t => t.length <= 64)
+        .forEach(t => out.add(t));
+    };
+    // Common spots authors put tags / keywords.
+    document.querySelectorAll('meta[name="keywords"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[name="news_keywords"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[property="article:tag"]').forEach(m => push(m.content));
+    document.querySelectorAll('meta[property="og:article:tag"]').forEach(m => push(m.content));
+    document.querySelectorAll('a[rel~="tag"]').forEach(a => push(a.textContent));
+    return [...out];
+  }
+
+  function mergeTags(userTags, autoTags) {
+    const seen = new Set();
+    const out = [];
+    for (const tag of [...(userTags || []), ...(autoTags || [])]) {
+      const key = String(tag).toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(String(tag));
+    }
+    return out;
   }
 
   function extract() {
@@ -167,12 +218,14 @@
 
     const now = new Date();
     const title = (article.title || document.title || "Untitled").trim();
+    const userTags = Array.isArray(window.__clipshipUserTags) ? window.__clipshipUserTags : [];
     const meta = {
       title,
       url: location.href,
       byline: (article.byline || "").trim(),
       siteName: (article.siteName || "").trim(),
       clipped: isoTimestamp(now),
+      tags: mergeTags(userTags, extractMetaTags()),
     };
 
     const body = htmlToMarkdown(article.content || "");

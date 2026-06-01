@@ -1,1 +1,6 @@
 flask>=3.0
+# Server-rendered Markdown for the web UI (always required for clipship-web).
+markdown>=3.5
+
+# Optional extras: install via `pip install -r requirements-extras.txt`
+# if you want PDF text extraction or bulk URL import.

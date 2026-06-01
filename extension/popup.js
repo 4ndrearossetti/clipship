@@ -42,7 +42,7 @@ $("save-btn").addEventListener("click", async () => {
   const endpoint = $("endpoint").value.trim();
   const secret = $("secret").value.trim();
   if (!endpoint || !secret) {
-    setStatus(configStatusEl, "Both fields are required.", "err");
+    setStatus(configStatusEl, "Endpoint and secret are required.", "err");
     return;
   }
   let originPattern;
@@ -53,21 +53,31 @@ $("save-btn").addEventListener("click", async () => {
     return;
   }
 
-  // Request host permission for the endpoint so fetch() bypasses CORS.
-  // This call requires a user gesture, which the Save click provides.
+  // Save BEFORE requesting host permission. Chrome's permission dialog
+  // steals focus from the popup and unloads it, so anything we tried to
+  // persist after the prompt would be lost — and the next time the user
+  // opened the popup the fields would be empty and they'd have to retype.
+  // Storing first means the values survive the popup unload either way.
+  await ext.storage.local.set({ endpoint, secret });
+
+  // Request host permission so the service worker's fetch() bypasses CORS.
+  // The Save click counts as the required user gesture.
   let granted = true;
   try {
     granted = await ext.permissions.request({ origins: [originPattern] });
   } catch (e) {
-    setStatus(configStatusEl, "Permission request failed: " + e.message, "err");
+    setStatus(configStatusEl, "Saved, but permission request failed: " + e.message, "err");
     return;
   }
   if (!granted) {
-    setStatus(configStatusEl, "Host permission denied — clips will be blocked by CORS.", "err");
+    setStatus(
+      configStatusEl,
+      "Saved, but host permission was denied — clips will be blocked by CORS until you grant it.",
+      "err",
+    );
     return;
   }
 
-  await ext.storage.local.set({ endpoint, secret });
   setStatus(configStatusEl, "Saved.", "ok");
   setTimeout(showClip, 600);
 });
@@ -80,12 +90,17 @@ $("clip-btn").addEventListener("click", async () => {
     return;
   }
 
+  const userTags = ($("tags").value || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
   $("clip-btn").disabled = true;
   try {
     setStatus(statusEl, "Extracting…", "");
-    const response = await ext.runtime.sendMessage({ type: "clip" });
+    const response = await ext.runtime.sendMessage({ type: "clip", tags: userTags });
     if (response && response.ok) {
-      let msg = `Saved: ${response.file}`;
+      let msg = response.pdf ? `Saved PDF: ${response.file}` : `Saved: ${response.file}`;
       if (response.assets_downloaded) {
         msg += ` (+${response.assets_downloaded} image${response.assets_downloaded === 1 ? "" : "s"})`;
       }
@@ -93,6 +108,7 @@ $("clip-btn").addEventListener("click", async () => {
         msg += ` — ${response.assets_failed} image${response.assets_failed === 1 ? "" : "s"} failed`;
       }
       setStatus(statusEl, msg, "ok");
+      $("tags").value = "";
     } else {
       setStatus(statusEl, `Error: ${response?.error || "unknown"}`, "err");
     }

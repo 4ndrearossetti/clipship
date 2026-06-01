@@ -1,0 +1,6 @@
+# Optional dependency — install with:
+#   pip install -r requirements-extras.txt
+#
+# pypdf: enables PDF text extraction. Without it, PDF clips are stored and
+#   linked but the markdown body contains only the [Open PDF] link.
+pypdf>=4.0
