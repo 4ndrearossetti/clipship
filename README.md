@@ -166,18 +166,6 @@ cd server
 mocked fetch, SSRF blocklist, encrypted payload accept/reject, web UI auth,
 tag filtering, search, asset serving, traversal blocking under `/assets`.
 
-## Publishing to Firefox AMO
-
-```bash
-cd extension
-./build.sh
-# → web-ext-artifacts/clipship-x.y.z.zip
-```
-
-The build script runs `web-ext lint` then `web-ext build`. Step-by-step
-upload walkthrough, listing copy template and answers to likely reviewer
-questions: [`docs/amo-submission.md`](docs/amo-submission.md).
-
 ---
 
 *MIT License.*
