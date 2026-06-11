@@ -263,6 +263,22 @@ class WebUITests(unittest.TestCase):
         self.assertIn(b"2026-05-31-plain.md", r.data)
         self.assertNotIn(b"2026-05-31-pdf.md", r.data)
 
+    def test_tag_filter_block_style_yaml(self):
+        # Obsidian-style block frontmatter must filter the same as flow style.
+        (Path(self.tmp) / "2026-06-01-block.md").write_text(
+            '---\ntitle: "Block"\nsource: "https://example.com"\n'
+            'clipped: "2026-06-01T00:00:00Z"\n'
+            "tags:\n  - rag\n  - llm-wiki\n"
+            '---\n\nBody.\n'
+        )
+        r = self.client.get("/tag/rag", headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"2026-06-01-block.md", r.data)
+        # And the tag chip should render on the listing page.
+        r = self.client.get("/", headers=self._auth())
+        self.assertIn(b">rag<", r.data)
+        self.assertIn(b">llm-wiki<", r.data)
+
     def test_search_by_title(self):
         r = self.client.get("/?q=plain", headers=self._auth())
         self.assertIn(b"2026-05-31-plain.md", r.data)

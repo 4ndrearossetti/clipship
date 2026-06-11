@@ -162,8 +162,11 @@
     if (meta.siteName) lines.push(`site: "${escapeYaml(meta.siteName)}"`);
     lines.push(`clipped: "${meta.clipped}"`);
     if (meta.tags && meta.tags.length) {
-      const inner = meta.tags.map(t => `"${escapeYaml(t)}"`).join(", ");
-      lines.push(`tags: [${inner}]`);
+      // Block-style YAML list — what Obsidian writes when you edit Properties,
+      // so manually-edited and clipship-written notes look identical. The
+      // server-side parser accepts both forms for backwards compatibility.
+      lines.push("tags:");
+      meta.tags.forEach(t => lines.push(`  - "${escapeYaml(t)}"`));
     }
     lines.push("---");
     return lines.join("\n");

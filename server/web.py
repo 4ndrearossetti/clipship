@@ -101,19 +101,38 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if not m:
         return {}, text
     fm = {}
-    for line in m.group(1).splitlines():
-        line = line.rstrip()
+    lines = m.group(1).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        i += 1
         if not line or line.startswith("#"):
             continue
         kv = _KV_RE.match(line)
         if not kv:
             continue
         key, raw = kv.group(1), kv.group(2)
+        if raw == "":
+            # Bare `key:` — peek ahead for a block-style YAML list
+            # (Obsidian's preferred form):
+            #     tags:
+            #       - rag
+            #       - llm-wiki
+            items = []
+            while i < len(lines):
+                stripped = lines[i].lstrip()
+                if not stripped.startswith("- "):
+                    break
+                items.append(_unquote(stripped[2:].strip()))
+                i += 1
+            if items:
+                fm[key] = items
+            continue
         list_m = _LIST_RE.match(raw)
         if list_m:
             inner = list_m.group(1)
             items = []
-            # Split on top-level commas. Tag values are always single-quoted
+            # Split on top-level commas. Tag values are always double-quoted
             # strings in our writers, but be lenient on input.
             for part in inner.split(","):
                 v = _unquote(part.strip())

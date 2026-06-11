@@ -319,8 +319,12 @@ def _build_pdf_frontmatter(meta: dict, pdf_relpath: str) -> str:
     lines.append(f'pdf: "{_yaml_escape(pdf_relpath)}"')
     tags = meta.get("tags") or []
     if isinstance(tags, list) and tags:
-        inner = ", ".join('"' + _yaml_escape(str(t)) + '"' for t in tags)
-        lines.append(f"tags: [{inner}]")
+        # Block-style YAML list — matches what Obsidian writes when you edit
+        # Properties, so manually-edited and clipship-written notes look
+        # identical. The web UI parser accepts both forms.
+        lines.append("tags:")
+        for t in tags:
+            lines.append(f'  - "{_yaml_escape(str(t))}"')
     lines.append("---")
     return "\n".join(lines)
 
