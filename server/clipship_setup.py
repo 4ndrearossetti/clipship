@@ -16,6 +16,7 @@ Runs on stdlib only so it works before any pip install. Targets Python 3.10+.
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -105,18 +106,25 @@ def render_config(values: dict) -> str:
     """Patch config.py.example with our chosen values.
 
     Stays line-based so comments and structure from the example are preserved.
+    String values go through json.dumps so that quotes, backslashes, and
+    non-ASCII characters in user-supplied passwords don't corrupt config.py.
     """
     text = EXAMPLE_PATH.read_text(encoding="utf-8")
+
+    def pystr(s: str) -> str:
+        # json string literals are valid Python string literals.
+        return json.dumps(s, ensure_ascii=False)
+
     overrides = {
-        "SECRET_KEY":          f'"{values["secret"]}"',
-        "OUTPUT_DIR":          f'"{values["output_dir"]}"',
-        "HOST":                f'"{values["host"]}"',
+        "SECRET_KEY":          pystr(values["secret"]),
+        "OUTPUT_DIR":          pystr(values["output_dir"]),
+        "HOST":                pystr(values["host"]),
         "PORT":                str(values["port"]),
-        "PDF_EXTRACTOR":       f'"{values["pdf_extractor"]}"',
+        "PDF_EXTRACTOR":       pystr(values["pdf_extractor"]),
         "EXTRACT_PDF_TEXT":    "True" if values["pdf_extractor"] != "none" else "False",
         "WEB_UI_ENABLED":      "True" if values["web_ui"] else "False",
-        "WEB_UI_USERNAME":     f'"{values["web_user"]}"',
-        "WEB_UI_PASSWORD":     f'"{values["web_password"]}"',
+        "WEB_UI_USERNAME":     pystr(values["web_user"]),
+        "WEB_UI_PASSWORD":     pystr(values["web_password"]),
     }
 
     out_lines = []
@@ -148,6 +156,52 @@ def ensure_venv() -> Path:
 def pip_install(pip_bin: Path, args: list[str]) -> None:
     print(f"  ↳ pip install {' '.join(args)}")
     subprocess.check_call([str(pip_bin), "install", *args])
+
+
+def _verify_written_config(expected_secret: str,
+                           expected_user: str | None,
+                           expected_password: str | None) -> bool:
+    """Import config.py in a fresh subprocess and check the values match.
+
+    Uses a subprocess so we don't pollute (or get fooled by) the wizard's own
+    sys.modules. Prints a one-line OK or the offending mismatch.
+    """
+    probe = (
+        "import json, sys, importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('config', {str(CONFIG_PATH)!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "print(json.dumps({\n"
+        "  'secret':   getattr(m,'SECRET_KEY',''),\n"
+        "  'user':     getattr(m,'WEB_UI_USERNAME',''),\n"
+        "  'password': getattr(m,'WEB_UI_PASSWORD',''),\n"
+        "  'enabled':  bool(getattr(m,'WEB_UI_ENABLED', False)),\n"
+        "}))\n"
+    )
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"  ✗ config.py failed to import: {e.stderr.strip()}")
+        return False
+    try:
+        got = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        print(f"  ✗ probe produced no JSON: {out.stdout!r}")
+        return False
+
+    if got["secret"] != expected_secret:
+        print(f"  ✗ SECRET_KEY mismatch: wrote {expected_secret!r}, file has {got['secret']!r}")
+        return False
+    if expected_user is not None and got["user"] != expected_user:
+        print(f"  ✗ WEB_UI_USERNAME mismatch: wrote {expected_user!r}, file has {got['user']!r}")
+        return False
+    if expected_password is not None and got["password"] != expected_password:
+        print(f"  ✗ WEB_UI_PASSWORD mismatch: wrote {expected_password!r}, file has {got['password']!r}")
+        return False
+    print("  ↳ verified: server will read back the exact values printed below.")
+    return True
 
 
 def main() -> int:
@@ -250,6 +304,14 @@ def main() -> int:
     CONFIG_PATH.write_text(config_text, encoding="utf-8")
     print(f"  ↳ wrote {CONFIG_PATH}")
 
+    # Verify the file we just wrote actually parses and the credentials match
+    # what we intended — catches any quoting/encoding mishap before the user
+    # discovers it as a 401/403 in the browser.
+    if not _verify_written_config(secret, web_user if web_ui else None,
+                                  web_password if web_ui else None):
+        print("ERROR: written config.py did not round-trip. Aborting before deps.")
+        return 1
+
     # --- 7. Install dependencies -------------------------------------------
     heading("7. Installing dependencies")
     pip_bin = ensure_venv()
@@ -274,13 +336,23 @@ def main() -> int:
         if mode == "local"
         else f"https://<your-domain>/clip"
     )
-    print(f"  Endpoint URL (paste in the extension): {endpoint}")
-    print(f"  Shared secret (paste in the extension): {secret}")
-    print(f"  Inbox folder:                            {output_dir}")
-    print(f"  PDF extractor:                           {pdf_extractor}")
+    # Each copy-paste value goes on its own line with no leading whitespace,
+    # so triple-click in a terminal selects exactly the value.
+    print()
+    print("  Endpoint URL (paste in the extension):")
+    print(endpoint)
+    print()
+    print("  Shared secret (paste in the extension):")
+    print(secret)
     if web_ui:
-        print(f"  Web UI:                                  http://{host}:5051/ "
-              f"(user: {web_user})")
+        print()
+        print(f"  Web UI URL:  http://{host}:5051/")
+        print(f"  Web UI user: {web_user}")
+        print( "  Web UI password:")
+        print(web_password)
+    print()
+    print(f"  Inbox folder:    {output_dir}")
+    print(f"  PDF extractor:   {pdf_extractor}")
     print()
     print("  Start the receiver with:")
     print(f"    {VENV_DIR / ('Scripts' if os.name == 'nt' else 'bin') / 'python'} "
@@ -292,8 +364,50 @@ def main() -> int:
     return 0
 
 
+def check_existing_config() -> int:
+    """Re-print what the server will load from the current config.py.
+
+    Handy for diagnosing "my secret looks right but auth fails": this shows
+    the exact SECRET_KEY / WEB_UI_USERNAME / WEB_UI_PASSWORD the server sees,
+    delimited so trailing whitespace or invisible characters are obvious.
+    """
+    if not CONFIG_PATH.exists():
+        print(f"No config.py at {CONFIG_PATH}")
+        return 1
+    probe = (
+        "import json, importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('config', {str(CONFIG_PATH)!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "print(json.dumps({\n"
+        "  'SECRET_KEY':      getattr(m,'SECRET_KEY',''),\n"
+        "  'WEB_UI_ENABLED':  bool(getattr(m,'WEB_UI_ENABLED', False)),\n"
+        "  'WEB_UI_USERNAME': getattr(m,'WEB_UI_USERNAME',''),\n"
+        "  'WEB_UI_PASSWORD': getattr(m,'WEB_UI_PASSWORD',''),\n"
+        "  'HOST':            getattr(m,'HOST',''),\n"
+        "  'PORT':            getattr(m,'PORT',0),\n"
+        "}))\n"
+    )
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"config.py failed to import:\n{e.stderr.strip()}")
+        return 1
+    got = json.loads(out.stdout)
+    print("What the server will load from config.py:")
+    for k, v in got.items():
+        print(f"  {k} = [{v!r}]   len={len(str(v))}")
+    print("\nIf the value in the brackets differs from what you pasted into the")
+    print("extension (whitespace, smart quotes, missing chars), that's the bug.")
+    return 0
+
+
 if __name__ == "__main__":
     try:
+        if "--check" in sys.argv[1:]:
+            sys.exit(check_existing_config())
         sys.exit(main())
     except KeyboardInterrupt:
         print("\nAborted.")
