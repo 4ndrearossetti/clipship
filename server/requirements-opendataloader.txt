@@ -1,0 +1,8 @@
+# Optional dependency — install with:
+#   pip install -r requirements-opendataloader.txt
+#
+# opendataloader-pdf: Java-backed PDF parser that produces structured
+#   Markdown (tables and headings preserved). Heavier than pypdf:
+#   requires a working Java 11+ runtime on the host (java -version).
+#   Enable in config.py with:  PDF_EXTRACTOR = "opendataloader"
+opendataloader-pdf>=0.1

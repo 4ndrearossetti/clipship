@@ -51,6 +51,18 @@ MAX_PDF_BYTES = int(getattr(config, "MAX_PDF_BYTES", 100 * 1024 * 1024))
 PDF_TIMEOUT = float(getattr(config, "PDF_TIMEOUT", 30))
 EXTRACT_PDF_TEXT = bool(getattr(config, "EXTRACT_PDF_TEXT", True))
 
+# Which backend to use for PDF text extraction. One of:
+#   "pypdf"          — pure-Python, fast, plain text (default).
+#   "opendataloader" — Java-backed; richer Markdown with tables/structure.
+#                      Requires Java 11+ and the opendataloader-pdf package.
+#   "none"           — store + link the PDF only, no text in the markdown body.
+# Legacy: EXTRACT_PDF_TEXT = False forces "none" regardless of PDF_EXTRACTOR.
+PDF_EXTRACTOR = str(getattr(config, "PDF_EXTRACTOR", "pypdf")).lower().strip()
+if PDF_EXTRACTOR not in ("pypdf", "opendataloader", "none"):
+    PDF_EXTRACTOR = "pypdf"
+if not EXTRACT_PDF_TEXT:
+    PDF_EXTRACTOR = "none"
+
 
 def _err(status: int, message: str):
     return jsonify({"status": "error", "error": message}), status
@@ -307,8 +319,12 @@ def _build_pdf_frontmatter(meta: dict, pdf_relpath: str) -> str:
     lines.append(f'pdf: "{_yaml_escape(pdf_relpath)}"')
     tags = meta.get("tags") or []
     if isinstance(tags, list) and tags:
-        inner = ", ".join('"' + _yaml_escape(str(t)) + '"' for t in tags)
-        lines.append(f"tags: [{inner}]")
+        # Block-style YAML list — matches what Obsidian writes when you edit
+        # Properties, so manually-edited and clipship-written notes look
+        # identical. The web UI parser accepts both forms.
+        lines.append("tags:")
+        for t in tags:
+            lines.append(f'  - "{_yaml_escape(str(t))}"')
     lines.append("---")
     return "\n".join(lines)
 
@@ -355,22 +371,7 @@ def _handle_pdf(target: Path, payload: dict) -> tuple[str, dict]:
     body_parts.append(f"[Open PDF]({pdf_relpath})")
     body_parts.append("")
 
-    text = ""
-    if EXTRACT_PDF_TEXT:
-        try:
-            import pypdf  # optional dependency
-            reader = pypdf.PdfReader(io.BytesIO(data))
-            chunks = []
-            for page in reader.pages:
-                try:
-                    chunks.append(page.extract_text() or "")
-                except Exception:
-                    continue
-            text = "\n\n".join(c.strip() for c in chunks if c and c.strip())
-        except ImportError:
-            text = ""
-        except Exception:
-            text = ""
+    text = _extract_pdf_text(data, pdf_name)
 
     if text:
         body_parts.append("---")
@@ -379,6 +380,65 @@ def _handle_pdf(target: Path, payload: dict) -> tuple[str, dict]:
         body_parts.append("")
 
     return "\n".join(body_parts), {"pdf": pdf_name, "pdf_bytes": len(data)}
+
+
+def _extract_pdf_text(data: bytes, pdf_name: str) -> str:
+    """Run the configured PDF extractor; return body text or '' on any failure."""
+    if PDF_EXTRACTOR == "none":
+        return ""
+    if PDF_EXTRACTOR == "opendataloader":
+        return _extract_with_opendataloader(data, pdf_name)
+    return _extract_with_pypdf(data)
+
+
+def _extract_with_pypdf(data: bytes) -> str:
+    try:
+        import pypdf  # optional dependency
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        chunks = []
+        for page in reader.pages:
+            try:
+                chunks.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n\n".join(c.strip() for c in chunks if c and c.strip())
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
+
+
+def _extract_with_opendataloader(data: bytes, pdf_name: str) -> str:
+    """Drive the opendataloader-pdf Python package via a temp scratch dir.
+
+    The package wraps a Java tool; it writes a Markdown file next to the input.
+    We give it a fresh temp directory each call so we can find the result by
+    extension without parsing its naming convention.
+    """
+    try:
+        import tempfile
+        import opendataloader_pdf  # optional dependency
+    except ImportError:
+        return ""
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="clipship-odl-") as tmp:
+            tmp_path = Path(tmp)
+            in_path = tmp_path / pdf_name
+            in_path.write_bytes(data)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            opendataloader_pdf.convert(
+                input_path=[str(in_path)],
+                output_dir=str(out_dir),
+                format="markdown",
+            )
+            md_files = sorted(out_dir.rglob("*.md"))
+            if not md_files:
+                return ""
+            return md_files[0].read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
 
 
 @app.post("/clip")
