@@ -354,12 +354,29 @@ def main() -> int:
     print(f"  Inbox folder:    {output_dir}")
     print(f"  PDF extractor:   {pdf_extractor}")
     print()
-    print("  Start the receiver with:")
-    print(f"    {VENV_DIR / ('Scripts' if os.name == 'nt' else 'bin') / 'python'} "
-          f"{SERVER_DIR / 'receiver.py'}")
     if mode == "remote":
-        print("\n  You also need to put nginx/Caddy in front for TLS and wire up the")
-        print("  systemd unit — see docs/setup.md sections 4 and 5.")
+        # Most common gotcha after editing config.py: the running daemon still
+        # has the old secret in memory, so clipping and the web UI continue
+        # to 401/403 until the service is restarted.
+        print("  ⚠  IMPORTANT: config.py was rewritten. If clipship is already")
+        print("     running under systemd, restart it now or the new SECRET_KEY")
+        print("     and WEB_UI_PASSWORD will NOT take effect:")
+        print()
+        print("       sudo systemctl restart clipship clipship-web")
+        print()
+        print("     Then re-open the extension popup, paste the secret printed")
+        print("     above into the secret field, and click Save.")
+        print()
+        print("     You also need nginx/Caddy in front for TLS and the systemd")
+        print("     units — see docs/setup.md sections 4 and 5.")
+    else:
+        print("  Start the receiver with:")
+        print(f"    {VENV_DIR / ('Scripts' if os.name == 'nt' else 'bin') / 'python'} "
+              f"{SERVER_DIR / 'receiver.py'}")
+        print()
+        print("  Then re-open the extension popup, paste the secret above,")
+        print("  and click Save. If you previously saved a different secret,")
+        print("  the new one only takes effect after you click Save again.")
     print()
     return 0
 
