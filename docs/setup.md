@@ -2,6 +2,67 @@
 
 End-to-end walkthrough: server, reverse proxy, extension.
 
+> **In a hurry?** Run the interactive wizard, which writes `config.py`,
+> generates the secret, and installs the dependencies for you:
+>
+> ```bash
+> cd server
+> python3 clipship_setup.py
+> ```
+>
+> It asks whether you want a **local** (single machine) or **remote**
+> (production) install and which PDF backend to enable. The two flows are
+> documented below if you prefer to wire things up by hand.
+
+## Local setup (single machine, no domain, no TLS)
+
+If you just want to run Clipship on your own laptop or homelab box and clip
+into a folder on the same machine, you can skip the reverse proxy, the
+domain, and TLS entirely. The receiver binds to loopback (`127.0.0.1`) so
+nothing else on the network can reach it.
+
+1. Install the server:
+
+   ```bash
+   git clone https://github.com/4ndrearossetti/clipship.git
+   cd clipship/server
+   python3 -m venv venv
+   ./venv/bin/pip install -r requirements.txt
+   # Optional: ./venv/bin/pip install -r requirements-extras.txt
+   ```
+
+2. Create `config.py`:
+
+   ```bash
+   cp config.py.example config.py
+   python3 -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+   Paste the generated value into `SECRET_KEY`, set `OUTPUT_DIR` to a
+   folder you control (e.g. `/home/you/clipship-inbox`), and save.
+
+3. Run it foreground in a terminal:
+
+   ```bash
+   ./venv/bin/python receiver.py
+   ```
+
+4. Load the extension from `extension/` (Chrome: `chrome://extensions`
+   → Developer mode → Load unpacked; Firefox: `about:debugging` → Load
+   Temporary Add-on). Configure it with:
+
+   - Endpoint: `http://127.0.0.1:5050/clip`
+   - Secret: the value from step 2
+
+That's the whole local install — no nginx, no systemd, no TLS, no AMO
+signing. The trade-off is that the receiver only runs while that terminal
+is open; close the terminal and clipping stops working until you start it
+again. To keep it running in the background on Linux, the systemd unit in
+the production walkthrough below works for a local install too — just
+point `OUTPUT_DIR` at a path you own.
+
+---
+
 ## 1. Pick a domain and create the inbox
 
 You need:
@@ -193,14 +254,33 @@ tags: [...]
 <extracted text body, when pypdf is installed>
 ```
 
-PDF text extraction needs the optional `pypdf` package:
+### PDF text extractor
 
-```bash
-./venv/bin/pip install -r requirements-extras.txt
+The receiver dispatches on the `PDF_EXTRACTOR` config option:
+
+| Value | Backend | Install | When to use |
+|---|---|---|---|
+| `"pypdf"` (default) | [pypdf](https://pypi.org/project/pypdf/) — pure Python | `pip install -r requirements-extras.txt` | Fast, no extra runtime; output is flat text. Good enough for most articles. |
+| `"opendataloader"` | [opendataloader-pdf](https://github.com/opendataloader-project/opendataloader-pdf) — Java-backed | `pip install -r requirements-opendataloader.txt` + Java 11+ on the host | Higher fidelity: real Markdown with headings, tables, and structure preserved. Heavier dependency. |
+| `"none"` | — | — | Store and link the PDF only, no body text. Same as `EXTRACT_PDF_TEXT = False`. |
+
+If the chosen backend isn't installed (or, for `opendataloader`, Java isn't
+available), the PDF is still downloaded and linked — the body just stays
+empty after the link. There's no crash.
+
+Switching backends is a one-line change in `config.py`:
+
+```python
+PDF_EXTRACTOR = "opendataloader"
 ```
 
-Without `pypdf`, the PDF is still downloaded and linked — the body is just
-empty after the link.
+Check Java is present before enabling `opendataloader`:
+
+```bash
+java -version   # needs to print 11 or higher
+```
+
+On Debian/Ubuntu: `sudo apt install default-jre-headless`.
 
 ## Web UI
 

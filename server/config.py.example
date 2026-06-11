@@ -56,9 +56,21 @@ MAX_PDF_BYTES = 100 * 1024 * 1024
 PDF_TIMEOUT = 30
 
 # When True, the server tries to extract text from the PDF and embed it in
-# the Markdown file (requires the `pypdf` package; gracefully no-ops if not
-# installed). Set to False if you only want the PDF stored and linked.
+# the Markdown file. Set to False if you only want the PDF stored and linked
+# (this overrides PDF_EXTRACTOR below).
 EXTRACT_PDF_TEXT = True
+
+# Which backend to use when EXTRACT_PDF_TEXT is True:
+#   "pypdf"          — pure-Python, fast, plain text (default).
+#                      Install: pip install -r requirements-extras.txt
+#   "opendataloader" — Java-backed; produces structured Markdown that
+#                      preserves tables and headings. Heavier dependency:
+#                      requires Java 11+ on the host.
+#                      Install: pip install -r requirements-opendataloader.txt
+#   "none"           — no body text; equivalent to EXTRACT_PDF_TEXT = False.
+# If the chosen backend isn't installed, the PDF is still stored and linked,
+# the body just stays empty after the link.
+PDF_EXTRACTOR = "pypdf"
 
 # --- Web UI -----------------------------------------------------------------
 # Browse clipped Markdown files from a web browser. Run via:

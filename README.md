@@ -14,7 +14,9 @@
   broken images when viewing offline or in privacy-preserving renderers.
 - **PDF clipping** — click the icon on a `.pdf` or `/pdf/` tab and the server
   downloads the file, stores it next to the Markdown, and extracts the text
-  body (with `pypdf`).
+  body. Pick your backend: `pypdf` (default, pure-Python, plain text) or
+  [`opendataloader-pdf`](https://github.com/opendataloader-project/opendataloader-pdf)
+  (Java-backed, structured Markdown with tables and headings).
 - **Web UI** — optional Flask read-only browser: list, search, filter by tag,
   view rendered Markdown with images. HTTP-Basic-auth-gated, off by default,
   reverse-proxy-friendly.
@@ -31,11 +33,22 @@
 # Server
 git clone https://github.com/4ndrearossetti/clipship.git
 cd clipship/server
+
+# Easiest: interactive wizard (local-or-remote install, picks PDF backend,
+# generates the secret, writes config.py, installs the right deps).
+python3 clipship_setup.py
+./venv/bin/python receiver.py
+```
+
+Or wire it up by hand:
+
+```bash
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
-# Optional: PDF text extraction + bulk import support
+# Optional: pypdf for PDF text extraction
 ./venv/bin/pip install -r requirements-extras.txt
+# Or: opendataloader-pdf for structured Markdown (needs Java 11+)
+# ./venv/bin/pip install -r requirements-opendataloader.txt
 cp config.py.example config.py
-# Generate a secret:
 python3 -c "import secrets; print(secrets.token_hex(32))"
 # Paste it into config.py as SECRET_KEY; set OUTPUT_DIR to your inbox path.
 ./venv/bin/python receiver.py
@@ -90,8 +103,10 @@ clipship/
 │   ├── test_clipship.py           # Unittest suite (21 tests)
 │   ├── config.py                  # Your config (gitignored)
 │   ├── config.py.example          # Template
+│   ├── clipship_setup.py          # Interactive setup wizard
 │   ├── requirements.txt           # Flask + markdown
 │   ├── requirements-extras.txt    # pypdf (optional, for PDF text)
+│   ├── requirements-opendataloader.txt  # opendataloader-pdf (optional, JVM)
 │   ├── clipship.service           # systemd unit for the receiver
 │   └── clipship-web.service       # systemd unit for the web UI
 │
